@@ -1205,7 +1205,12 @@ export class StorageManager {
                 console.log('[StorageManager] Legacy config migrated successfully.');
             } else {
                 accountId = existing.rows[0].id;
+                console.log('[StorageManager] Legacy config already migrated, account ID:', accountId);
             }
+
+            // 关键修复：迁移后立即删除旧配置，防止下次启动再次进入此逻辑
+            console.log('[StorageManager] Cleaning up legacy settings...');
+            await query("DELETE FROM system_settings WHERE key IN ('onedrive_client_id', 'onedrive_client_secret', 'onedrive_refresh_token', 'onedrive_tenant_id')");
 
             // 关键修复：确保所有 source='onedrive' 且没有 storage_account_id 的文件都关联到此账号
             const updateRes = await query(
