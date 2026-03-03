@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
-import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
+import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck, ExternalLink, BookOpen } from "lucide-react";
 import { Button } from "../ui/Button";
 import { LanguageToggle } from "../ui/LanguageToggle";
 import { useTheme } from "../../hooks/useTheme";
@@ -570,6 +570,22 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
 
             {/* Storage Configuration Section (New) */}
             <SettingsSection title="存储源设置">
+                <div className="mx-4 mt-3 mb-4 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5 flex items-center gap-3">
+                    <BookOpen className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                    <p className="text-xs text-muted-foreground">
+                        首次配置？请参阅{" "}
+                        <a
+                            href="https://nccttc.github.io/FoomClous/storage_configuration_guide.html"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 font-medium hover:underline"
+                        >
+                            存储源配置指南
+                            <ExternalLink className="h-3 w-3" />
+                        </a>
+                        {" "}查看详细教程。
+                    </p>
+                </div>
                 <div className="border-b border-border/50">
                     <SettingsRow
                         icon={Database}
