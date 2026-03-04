@@ -66,55 +66,52 @@ async function ensureSilentNotice(client: TelegramClient, chatId: Api.TypeEntity
     const silentSessionActive = silentSessionMap.has(chatIdStr);
     if (!silentSessionActive) return;
 
+    // 已有静默通知消息
+    const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
+    if (silentMsgId) {
+        if (!replyToMsg) return; // 内部刷新 → 跳过，节省 API 调用
+        // 用户发送了新消息 → 删除旧通知，在新消息下方重新发送
+        try {
+            await client.deleteMessages(chatId, [silentMsgId], { revoke: true });
+        } catch (e) { }
+        silentNoticeMessageIdMap.delete(chatIdStr);
+    }
+
     // 防止静默模式提示被重复发送的并发锁
     if (silentNoticePromiseMap.has(chatIdStr)) {
         try { await silentNoticePromiseMap.get(chatIdStr); } catch (e) { }
+        // 等待完成后再次检查：可能已被并发调用发送
+        if (silentNoticeMessageIdMap.get(chatIdStr)) return;
     }
 
-    const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
-    const now = Date.now();
-    const lastTime = lastSilentNotificationTimeMap.get(chatIdStr) || 0;
+    const text = buildSilentModeNotice(fileCount);
 
-    if (now - lastTime > SILENT_NOTIFICATION_COOLDOWN || !silentMsgId) {
-        lastSilentNotificationTimeMap.set(chatIdStr, now); // 提前占位防止后续同时进入
-        const text = buildSilentModeNotice(fileCount);
-
-        const sendPromise = (async () => {
-            let sMsg: any;
-            if (replyToMsg) {
-                sMsg = await safeReply(replyToMsg, { message: text });
-            }
-            if (!sMsg) {
-                try {
-                    sMsg = await client.sendMessage(chatId, { message: text });
-                } catch (e) {
-                    console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
-                }
-            }
-            if (sMsg) {
-                silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
-                console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
-            }
-            return sMsg;
-        })();
-
-        silentNoticePromiseMap.set(chatIdStr, sendPromise);
-        try {
-            await sendPromise;
-        } finally {
-            if (silentNoticePromiseMap.get(chatIdStr) === sendPromise) {
-                silentNoticePromiseMap.delete(chatIdStr);
+    const sendPromise = (async () => {
+        let sMsg: any;
+        if (replyToMsg) {
+            sMsg = await safeReply(replyToMsg, { message: text });
+        }
+        if (!sMsg) {
+            try {
+                sMsg = await client.sendMessage(chatId, { message: text });
+            } catch (e) {
+                console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
             }
         }
-        return;
-    }
+        if (sMsg) {
+            silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
+            console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
+        }
+        return sMsg;
+    })();
 
-    // Cooldown 内：编辑现有提示
-    if (silentMsgId) {
-        await safeEditMessage(client, chatId, {
-            message: silentMsgId,
-            text: buildSilentModeNotice(fileCount),
-        });
+    silentNoticePromiseMap.set(chatIdStr, sendPromise);
+    try {
+        await sendPromise;
+    } finally {
+        if (silentNoticePromiseMap.get(chatIdStr) === sendPromise) {
+            silentNoticePromiseMap.delete(chatIdStr);
+        }
     }
 }
 
