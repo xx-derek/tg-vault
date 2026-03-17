@@ -30,7 +30,10 @@ router.get('/', async (_req: Request, res: Response) => {
 
         const result = await query(queryStr, params);
 
-        const files = result.rows.map(file => ({
+        // 过滤掉文件夹占位符文件
+        const filteredRows = result.rows.filter((f: any) => f.name !== '.folder');
+
+        const files = filteredRows.map(file => ({
             ...file,
             size: formatFileSize(file.size),
             date: formatRelativeTime(file.created_at),
@@ -44,6 +47,71 @@ router.get('/', async (_req: Request, res: Response) => {
     } catch (error) {
         console.error('获取文件列表失败:', error);
         res.status(500).json({ error: '获取文件列表失败' });
+    }
+});
+
+// 创建空文件夹
+router.post('/folders', async (req: Request, res: Response) => {
+    try {
+        const { folderName } = req.body;
+        if (!folderName || typeof folderName !== 'string' || folderName.trim().length === 0) {
+            return res.status(400).json({ error: '文件夹名称不能为空' });
+        }
+
+        const trimmedName = folderName.trim();
+        if (/[\/\\:*?"<>|]/.test(trimmedName)) {
+            return res.status(400).json({ error: '文件夹名包含非法字符' });
+        }
+
+        const { storageManager } = await import('../services/storage.js');
+        const activeAccountId = storageManager.getActiveAccountId();
+        const provider = storageManager.getProvider();
+
+        // 检查文件夹是否已存在 (是否有任何文件在其下面)
+        let checkQuery = '';
+        let checkParams: any[] = [];
+
+        if (provider.name === 'local') {
+            checkQuery = 'SELECT COUNT(*)::int as cnt FROM files WHERE source = \'local\' AND folder = $1';
+            checkParams = [trimmedName];
+        } else {
+            checkQuery = 'SELECT COUNT(*)::int as cnt FROM files WHERE storage_account_id = $1 AND folder = $2';
+            checkParams = [activeAccountId, trimmedName];
+        }
+
+        const checkResult = await query(checkQuery, checkParams);
+        if (checkResult.rows[0].cnt > 0) {
+            return res.status(400).json({ error: '该文件夹已存在' });
+        }
+
+        // 插入占位文件
+        const insertQuery = `
+            INSERT INTO files (
+                name, stored_name, type, mime_type, size, 
+                path, source, folder, storage_account_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+        `;
+
+        const source = provider.name === 'local' ? 'local' : provider.name;
+        const accountId = provider.name === 'local' ? null : activeAccountId;
+
+        await query(insertQuery, [
+            '.folder',             // name
+            '.folder',             // stored_name  
+            'other',               // type
+            'application/x-directory', // mime_type
+            0,                     // size
+            '.folder',             // path
+            source,                // source
+            trimmedName,           // folder
+            accountId              // storage_account_id
+        ]);
+
+        res.json({ success: true, folder: trimmedName });
+    } catch (error) {
+        console.error('创建空文件夹失败:', error);
+        res.status(500).json({ error: '创建空文件夹失败' });
     }
 });
 

@@ -437,6 +437,24 @@ class FileAPI {
         return response.json();
     }
 
+    async createFolder(folderName: string): Promise<{ success: boolean; folder: string }> {
+        const response = await fetch(`${API_BASE}/api/files/folders`, {
+            method: 'POST',
+            headers: {
+                ...getHeaders(),
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ folderName }),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || '创建文件夹失败');
+        }
+
+        return response.json();
+    }
+
     // 重命名文件
     async renameFile(id: string, name: string): Promise<{ success: boolean; name: string }> {
         const response = await fetch(`${API_BASE}/api/files/${id}/rename`, {

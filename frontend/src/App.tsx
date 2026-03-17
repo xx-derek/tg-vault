@@ -4,7 +4,7 @@ import { Button } from "./components/ui/Button";
 import { FileCard } from "./components/ui/FileCard";
 import { FolderCard, type FolderData } from "./components/ui/FolderCard";
 import { UploadZone } from "./components/ui/UploadZone";
-import { Search, RefreshCw, ArrowLeft, ChevronDown, ChevronRight, CheckSquare, Cloud, HardDrive, Database, Package, Network } from "lucide-react";
+import { Search, RefreshCw, ArrowLeft, ChevronDown, ChevronRight, CheckSquare, Cloud, HardDrive, Database, Package, Network, FolderPlus } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { PreviewModal } from "./components/ui/PreviewModal";
 import { BulkActionToolbar } from "./components/ui/BulkActionToolbar";
@@ -18,6 +18,7 @@ import { DeleteAlert } from "./components/ui/DeleteAlert";
 import { FolderPromptModal } from "./components/ui/FolderPromptModal";
 import { RenameModal } from "./components/ui/RenameModal";
 import { MoveModal } from "./components/ui/MoveModal";
+import { CreateFolderModal } from "./components/ui/CreateFolderModal";
 import { UploadQueueModal, type QueueItem } from "./components/ui/UploadQueueModal";
 import { Notification, type NotificationType } from "./components/ui/Notification";
 import { fileApi, type FileData, type StorageStats as StorageStatsType } from "./services/api";
@@ -68,6 +69,7 @@ function App() {
   const [isFoldersExpanded, setIsFoldersExpanded] = useState(false); // 文件夹区域折叠状态，默认折叠
 
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+  const [isCreateFolderModalOpen, setIsCreateFolderModalOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   // 排序状态
@@ -502,8 +504,32 @@ function App() {
     }
   };
 
+  // 创建空文件夹
+  const handleCreateFolder = async (folderName: string) => {
+    try {
+      await fileApi.createFolder(folderName);
+      setNotification({
+        show: true,
+        message: '文件夹创建成功',
+        type: 'success'
+      });
+      // 刷新列表
+      loadFiles();
+    } catch (error: any) {
+      console.error('创建文件夹失败:', error);
+      setNotification({
+        show: true,
+        message: error.message || '创建文件夹失败',
+        type: 'error'
+      });
+    }
+  };
+
   const filteredFiles = useMemo(() => {
     return files.filter(file => {
+      // 过滤掉用于表示空文件夹的占位记录
+      if (file.name === '.folder') return false;
+
       const matchesCategory =
         currentCategory === "favorites" ||
         currentCategory === "all" ||
@@ -797,12 +823,21 @@ function App() {
                         </span>
                       </>
                     ) : (
-                      <>
+                      <div className="flex items-center gap-3">
                         {t("app.recent")}
                         <span className="text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
                           {folders.length > 0 ? `${folders.length} 个文件夹, ` : ''}{looseFiles.length} 个文件
                         </span>
-                      </>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs font-medium text-muted-foreground hover:text-primary transition-colors flex items-center gap-1.5"
+                          onClick={() => setIsCreateFolderModalOpen(true)}
+                        >
+                          <FolderPlus className="h-3.5 w-3.5" />
+                          创建文件夹
+                        </Button>
+                      </div>
                     )}
                   </h3>
 
@@ -1047,6 +1082,12 @@ function App() {
           onClose={() => setIsFolderModalOpen(false)}
           onConfirm={(folderName) => startUpload(pendingFiles, folderName)}
           onCancel={() => startUpload(pendingFiles)}
+        />
+
+        <CreateFolderModal
+          isOpen={isCreateFolderModalOpen}
+          onClose={() => setIsCreateFolderModalOpen(false)}
+          onConfirm={handleCreateFolder}
         />
 
         <MoveModal
