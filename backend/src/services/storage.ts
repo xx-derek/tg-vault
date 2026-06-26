@@ -365,7 +365,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
     name = 'onedrive';
     private accessToken: string | null = null;
     private tokenExpiresAt: number = 0;
-    private readonly ONEDRIVE_FOLDER = 'FoomClous'; // 存储文件夹名
+    private readonly ONEDRIVE_FOLDER = 'FlClouds'; // 存储文件夹名
 
     constructor(
         public id: string,
@@ -846,7 +846,7 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
     private oauth2Client: any;
     private drive: any;
     private tokenExpiresAt: number = 0;
-    private readonly GOOGLE_DRIVE_FOLDER = 'FoomClous';
+    private readonly GOOGLE_DRIVE_FOLDER = 'FlClouds';
 
     constructor(
         public id: string,

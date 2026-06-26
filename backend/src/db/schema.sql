@@ -1,4 +1,4 @@
--- FoomClous 数据库表结构
+-- FlClouds 数据库表结构
 
 -- 文件表
 CREATE TABLE IF NOT EXISTS files (

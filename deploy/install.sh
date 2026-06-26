@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# FoomClous 服务器部署脚本
+# FlClouds 服务器部署脚本
 # 适用于 Debian 系统
 
 set -e
 
-DOMAIN="i.foomclous.dpdns.org"
+DOMAIN="cloud.example.com"
 EMAIL="admin@example.com"  # 请修改为您的邮箱
 
 echo "=========================================="
-echo "  FoomClous 服务器部署脚本"
+echo "  FlClouds 服务器部署脚本"
 echo "  域名: $DOMAIN"
 echo "=========================================="
 
@@ -59,7 +59,7 @@ fi
 # 3. 创建项目目录
 echo ""
 echo "[3/6] 创建项目目录..."
-DEPLOY_DIR="/opt/foomclous"
+DEPLOY_DIR="/opt/flclouds"
 sudo mkdir -p $DEPLOY_DIR
 sudo chown -R $USER:$USER $DEPLOY_DIR
 

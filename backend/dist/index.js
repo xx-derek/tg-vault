@@ -84,7 +84,7 @@ var init_db = __esm({
     dotenv.config();
     ({ Pool } = pg);
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL || "postgresql://foomclous:password@localhost:5432/foomclous"
+      connectionString: process.env.DATABASE_URL || "postgresql://flclouds:password@localhost:5432/flclouds"
     });
     initializationPromise = null;
     pool.on("connect", async () => {
@@ -397,7 +397,7 @@ var init_storage = __esm({
       name = "onedrive";
       accessToken = null;
       tokenExpiresAt = 0;
-      ONEDRIVE_FOLDER = "FoomClous";
+      ONEDRIVE_FOLDER = "FlClouds";
       /**
        * 生成 OAuth 授权 URL
        */
@@ -809,7 +809,7 @@ var init_storage = __esm({
       oauth2Client;
       drive;
       tokenExpiresAt = 0;
-      GOOGLE_DRIVE_FOLDER = "FoomClous";
+      GOOGLE_DRIVE_FOLDER = "FlClouds";
       static generateAuthUrl(clientId, clientSecret, redirectUri) {
         const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
         return oauth2Client.generateAuthUrl({
@@ -1373,7 +1373,7 @@ async function generateOTPAuthUrl(user = "Admin") {
   }
   const otpauth = authenticator.toURI({
     label: user,
-    issuer: "FoomClous",
+    issuer: "FlClouds",
     secret
   });
   return await QRCode.toDataURL(otpauth);
@@ -1774,13 +1774,13 @@ function buildAuthSuccess() {
   ].join("\n");
 }
 function buildStartPrompt() {
-  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 FoomClous Bot\uFF01**
+  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 FlClouds Bot\uFF01**
 
 \u{1F510} \u8BF7\u4F7F\u7528\u4E0B\u65B9\u952E\u76D8\u8F93\u5165\u5BC6\u7801\uFF1A`;
 }
 function buildHelp() {
   return [
-    `\u{1F4D6} **FoomClous Bot \u5E2E\u52A9**`,
+    `\u{1F4D6} **FlClouds Bot \u5E2E\u52A9**`,
     LINE,
     ``,
     `**\u{1F4E4} \u6587\u4EF6\u4E0A\u4F20**`,
@@ -1823,7 +1823,7 @@ function buildStorageReport(data) {
     `  \u53EF\u3000\u7528\u3000${formatBytes(data.diskFree)}`,
     `  ${usageBar}`,
     ``,
-    `**\u{1F4C1} FoomClous \u6587\u4EF6**`,
+    `**\u{1F4C1} FlClouds \u6587\u4EF6**`,
     `  \u6587\u4EF6\u6570\u3000${data.fileCount} \u4E2A`,
     `  \u5360\u3000\u7528\u3000${formatBytes(data.totalFileSize)}`,
     ``,
@@ -2337,7 +2337,7 @@ async function initTelegramUserClient() {
     connectionRetries: 15,
     retryDelay: 2e3,
     useWSS: false,
-    deviceModel: "FoomClous User Downloader",
+    deviceModel: "FlClouds User Downloader",
     systemVersion: "1.0.0",
     appVersion: "1.0.0",
     floodSleepThreshold: 120
@@ -3643,9 +3643,9 @@ async function handleStorage(message) {
             FROM files 
             WHERE storage_account_id IS NOT DISTINCT FROM $1
         `, [activeAccountId]);
-    const foomclousStats = result.rows[0];
-    const totalSize = parseInt(foomclousStats.total_size);
-    const fileCount = parseInt(foomclousStats.file_count);
+    const flcloudsStats = result.rows[0];
+    const totalSize = parseInt(flcloudsStats.total_size);
+    const fileCount = parseInt(flcloudsStats.file_count);
     const usedPercent = Math.round((diskSpace.size - diskSpace.free) / diskSpace.size * 100);
     const queueStats = getDownloadQueueStats();
     const reply = buildStorageReport({
@@ -4224,7 +4224,7 @@ async function initTelegramBot() {
       connectionRetries: 15,
       retryDelay: 2e3,
       useWSS: false,
-      deviceModel: "FoomClous Bot",
+      deviceModel: "FlClouds Bot",
       systemVersion: "1.0.0",
       appVersion: "1.0.0",
       floodSleepThreshold: 120
@@ -5570,7 +5570,7 @@ router4.get("/stats", requireAuth, async (_req, res) => {
                 COALESCE(SUM(size), 0) as total_size
             FROM files
         `);
-    const foomclousStats = result.rows[0];
+    const flcloudsStats = result.rows[0];
     res.json({
       server: {
         total: formatBytes3(diskSpace.size),
@@ -5581,11 +5581,11 @@ router4.get("/stats", requireAuth, async (_req, res) => {
         freeBytes: diskSpace.free,
         usedPercent: Math.round((diskSpace.size - diskSpace.free) / diskSpace.size * 100)
       },
-      foomclous: {
-        used: formatBytes3(parseInt(foomclousStats.total_size)),
-        usedBytes: parseInt(foomclousStats.total_size),
-        fileCount: parseInt(foomclousStats.file_count),
-        usedPercent: Math.round(parseInt(foomclousStats.total_size) / diskSpace.size * 100)
+      flclouds: {
+        used: formatBytes3(parseInt(flcloudsStats.total_size)),
+        usedBytes: parseInt(flcloudsStats.total_size),
+        fileCount: parseInt(flcloudsStats.file_count),
+        usedPercent: Math.round(parseInt(flcloudsStats.total_size) / diskSpace.size * 100)
       }
     });
   } catch (error) {
@@ -6269,7 +6269,7 @@ app.listen(PORT, async () => {
     await initTelegramBot();
   }
   console.log(`
-\u{1F680} FoomClous \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
+\u{1F680} FlClouds \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
 \u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path15.resolve(UPLOAD_DIR6)}
 \u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path15.resolve(THUMBNAIL_DIR5)}

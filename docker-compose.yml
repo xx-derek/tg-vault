@@ -1,30 +1,32 @@
+name: flclouds
+
 services:
   # 前端（暴露到宿主机供 Nginx 反代）
   frontend:
-    image: foomclous-frontend:latest
+    image: flclouds-frontend:latest
     build:
       context: ./frontend
       args:
         - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
-    container_name: foomclous-frontend
+    container_name: flclouds-frontend
     ports:
       - "47832:80"
     networks:
-      - foomclous-network
+      - flclouds-network
     restart: unless-stopped
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
-    image: foomclous-backend:latest
+    image: flclouds-backend:latest
     build: ./backend
-    container_name: foomclous-backend
+    container_name: flclouds-backend
     ports:
       - "51947:51947"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://foomclous:${DB_PASSWORD:-foomclous123}@postgres:5432/foomclous
+      - DATABASE_URL=postgresql://flclouds:${DB_PASSWORD:-flclouds123}@postgres:5432/flclouds
       - PORT=51947
       - UPLOAD_DIR=/data/uploads
       - THUMBNAIL_DIR=/data/thumbnails
@@ -45,25 +47,25 @@ services:
     volumes:
       - file-storage:/data
     networks:
-      - foomclous-network
+      - flclouds-network
     restart: unless-stopped
 
   # 数据库
   postgres:
     image: postgres:16-alpine
-    container_name: foomclous-postgres
+    container_name: flclouds-postgres
     environment:
-      - POSTGRES_DB=foomclous
-      - POSTGRES_USER=foomclous
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-foomclous123}
+      - POSTGRES_DB=flclouds
+      - POSTGRES_USER=flclouds
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-flclouds123}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - foomclous-network
+      - flclouds-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U foomclous -d foomclous" ]
+      test: [ "CMD-SHELL", "pg_isready -U flclouds -d flclouds" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -75,5 +77,5 @@ volumes:
     driver: local
 
 networks:
-  foomclous-network:
+  flclouds-network:
     driver: bridge

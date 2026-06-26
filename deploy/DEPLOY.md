@@ -1,4 +1,4 @@
-# FoomClous 服务器部署指南
+# FlClouds 服务器部署指南
 
 ## 前置条件
 
@@ -14,11 +14,11 @@
 
 ```bash
 # 在本地打包项目（不包含 node_modules）
-cd C:\Users\admin\Desktop\FoomClous
-tar --exclude='node_modules' --exclude='.git' -czvf foomclous.tar.gz .
+cd C:\Users\admin\Desktop\FlClouds
+tar --exclude='node_modules' --exclude='.git' -czvf flclouds.tar.gz .
 
 # 上传到服务器
-scp foomclous.tar.gz user@your-server-ip:/tmp/
+scp flclouds.tar.gz user@your-server-ip:/tmp/
 ```
 
 2. **在服务器上解压并运行部署脚本**
@@ -28,9 +28,9 @@ scp foomclous.tar.gz user@your-server-ip:/tmp/
 ssh user@your-server-ip
 
 # 解压
-sudo mkdir -p /opt/foomclous
-cd /opt/foomclous
-sudo tar -xzvf /tmp/foomclous.tar.gz
+sudo mkdir -p /opt/flclouds
+cd /opt/flclouds
+sudo tar -xzvf /tmp/flclouds.tar.gz
 
 # 修改部署脚本中的邮箱
 nano deploy/install.sh
@@ -87,17 +87,17 @@ exit
 
 ```bash
 # 创建目录
-sudo mkdir -p /opt/foomclous
-sudo chown -R $USER:$USER /opt/foomclous
+sudo mkdir -p /opt/flclouds
+sudo chown -R $USER:$USER /opt/flclouds
 
-# 上传文件到 /opt/foomclous
+# 上传文件到 /opt/flclouds
 # (使用 scp, rsync, 或 SFTP)
 ```
 
 #### 3. 创建环境变量文件
 
 ```bash
-cd /opt/foomclous
+cd /opt/flclouds
 
 # 生成随机数据库密码
 echo "DB_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-32)" > .env
@@ -145,7 +145,7 @@ docker compose restart nginx
 
 ```bash
 # 进入项目目录
-cd /opt/foomclous
+cd /opt/flclouds
 
 # 查看服务状态
 docker compose ps
@@ -183,10 +183,10 @@ docker compose restart nginx
 
 ```bash
 # 备份数据库
-docker compose exec postgres pg_dump -U foomclous foomclous > backup_$(date +%Y%m%d).sql
+docker compose exec postgres pg_dump -U flclouds flclouds > backup_$(date +%Y%m%d).sql
 
 # 备份上传文件
-docker run --rm -v foomclous_file-storage:/data -v $(pwd):/backup alpine tar czvf /backup/files_$(date +%Y%m%d).tar.gz /data
+docker run --rm -v flclouds_file-storage:/data -v $(pwd):/backup alpine tar czvf /backup/files_$(date +%Y%m%d).tar.gz /data
 ```
 
 ## 故障排查
@@ -211,7 +211,7 @@ docker compose restart nginx
 ### 数据库连接失败
 ```bash
 # 检查数据库状态
-docker compose exec postgres pg_isready -U foomclous
+docker compose exec postgres pg_isready -U flclouds
 
 # 查看数据库日志
 docker compose logs postgres

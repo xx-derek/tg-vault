@@ -122,13 +122,13 @@ export function buildAuthSuccess(): string {
 
 /** /start 未认证的欢迎 + 密码键盘提示 */
 export function buildStartPrompt(): string {
-    return `👋 **欢迎使用 FoomClous Bot！**\n\n🔐 请使用下方键盘输入密码：`;
+    return `👋 **欢迎使用 FlClouds Bot！**\n\n🔐 请使用下方键盘输入密码：`;
 }
 
 /** /help 帮助文本 */
 export function buildHelp(): string {
     return [
-        `📖 **FoomClous Bot 帮助**`,
+        `📖 **FlClouds Bot 帮助**`,
         LINE,
         ``,
         `**📤 文件上传**`,
@@ -188,7 +188,7 @@ export function buildStorageReport(data: StorageReportData): string {
         `  可　用　${formatBytes(data.diskFree)}`,
         `  ${usageBar}`,
         ``,
-        `**📁 FoomClous 文件**`,
+        `**📁 FlClouds 文件**`,
         `  文件数　${data.fileCount} 个`,
         `  占　用　${formatBytes(data.totalFileSize)}`,
         ``,

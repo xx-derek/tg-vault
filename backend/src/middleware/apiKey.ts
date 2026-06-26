@@ -55,7 +55,7 @@ export const validateApiKey = async (req: Request, res: Response, next: NextFunc
 // 生成新的 API Key
 export const generateApiKey = (): string => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let key = 'fc_'; // FoomClous 前缀
+    let key = 'fc_'; // FlClouds 前缀
     for (let i = 0; i < 48; i++) {
         key += chars.charAt(Math.floor(Math.random() * chars.length));
     }

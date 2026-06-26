@@ -88,11 +88,11 @@ export const LoginPage = ({ onLogin }: LoginPageProps) => {
                     >
                         <img
                             src="/logo.png"
-                            alt="FoomClous Logo"
+                            alt="FlClouds Logo"
                             className="w-20 h-20 rounded-2xl shadow-lg shadow-black/10"
                         />
                     </motion.div>
-                    <h1 className="text-2xl font-bold tracking-tight text-foreground">FoomClous</h1>
+                    <h1 className="text-2xl font-bold tracking-tight text-foreground">FlClouds</h1>
                     <p className="text-muted-foreground mt-1">
                         {step === 'password' ? '请输入访问密码' : '双重身份验证'}
                     </p>

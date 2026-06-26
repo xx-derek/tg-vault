@@ -103,9 +103,9 @@ export async function handleStorage(message: Api.Message): Promise<void> {
             FROM files 
             WHERE storage_account_id IS NOT DISTINCT FROM $1
         `, [activeAccountId]);
-        const foomclousStats = result.rows[0];
-        const totalSize = parseInt(foomclousStats.total_size);
-        const fileCount = parseInt(foomclousStats.file_count);
+        const flcloudsStats = result.rows[0];
+        const totalSize = parseInt(flcloudsStats.total_size);
+        const fileCount = parseInt(flcloudsStats.file_count);
         const usedPercent = Math.round(((diskSpace.size - diskSpace.free) / diskSpace.size) * 100);
 
         const queueStats = getDownloadQueueStats();

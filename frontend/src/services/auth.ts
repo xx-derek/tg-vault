@@ -1,7 +1,7 @@
 import { API_BASE } from './config';
 
-const TOKEN_KEY = 'foomclous_token';
-const TOKEN_EXPIRY_KEY = 'foomclous_token_expiry';
+const TOKEN_KEY = 'flclouds_token';
+const TOKEN_EXPIRY_KEY = 'flclouds_token_expiry';
 
 class AuthService {
     private token: string | null = null;

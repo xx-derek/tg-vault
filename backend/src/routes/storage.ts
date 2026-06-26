@@ -53,7 +53,7 @@ router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
         const diskPath = os.platform() === 'win32' ? 'C:' : path.resolve(UPLOAD_DIR);
         const diskSpace = await checkDiskSpace(diskPath);
 
-        // 获取 FoomClous 使用的空间
+        // 获取 FlClouds 使用的空间
         const result = await query(`
             SELECT 
                 COUNT(*) as file_count,
@@ -61,7 +61,7 @@ router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
             FROM files
         `);
 
-        const foomclousStats = result.rows[0];
+        const flcloudsStats = result.rows[0];
 
         res.json({
             server: {
@@ -73,11 +73,11 @@ router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
                 freeBytes: diskSpace.free,
                 usedPercent: Math.round(((diskSpace.size - diskSpace.free) / diskSpace.size) * 100),
             },
-            foomclous: {
-                used: formatBytes(parseInt(foomclousStats.total_size)),
-                usedBytes: parseInt(foomclousStats.total_size),
-                fileCount: parseInt(foomclousStats.file_count),
-                usedPercent: Math.round((parseInt(foomclousStats.total_size) / diskSpace.size) * 100),
+            flclouds: {
+                used: formatBytes(parseInt(flcloudsStats.total_size)),
+                usedBytes: parseInt(flcloudsStats.total_size),
+                fileCount: parseInt(flcloudsStats.file_count),
+                usedPercent: Math.round((parseInt(flcloudsStats.total_size) / diskSpace.size) * 100),
             },
         });
     } catch (error) {

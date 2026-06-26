@@ -34,7 +34,7 @@ jobs:
         id: meta-backend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/foomclous-backend
+          images: ${{ secrets.DOCKER_USERNAME }}/flclouds-backend
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -71,7 +71,7 @@ jobs:
         id: meta-frontend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/foomclous-frontend
+          images: ${{ secrets.DOCKER_USERNAME }}/flclouds-frontend
           tags: |
             type=ref,event=branch
             type=ref,event=pr

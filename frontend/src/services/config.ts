@@ -13,4 +13,4 @@ const getApiBase = () => {
 };
 
 export const API_BASE = getApiBase();
-console.log('🚀 FoomClous API_BASE:', API_BASE || '(relative path)');
+console.log('🚀 FlClouds API_BASE:', API_BASE || '(relative path)');

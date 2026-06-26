@@ -725,7 +725,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     <p className="text-xs text-muted-foreground">
                         首次配置？请参阅{" "}
                         <a
-                            href="https://nccttc.github.io/FoomClous/storage_configuration_guide.html"
+                            href="https://nccttc.github.io/FlClouds/storage_configuration_guide.html"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 font-medium hover:underline"
@@ -1722,7 +1722,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             {/* 分隔线 */}
                             <div className="border-t border-border/50" />
 
-                            {/* FoomClous 使用量 */}
+                            {/* FlClouds 使用量 */}
                             <div className="space-y-3">
                                 <div className="flex items-center">
                                     <div className="flex items-center gap-3">
@@ -1730,11 +1730,11 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                             <Cloud className="h-5 w-5" />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-medium">FoomClous 存储</p>
+                                            <p className="text-sm font-medium">FlClouds 存储</p>
                                             <div className="flex items-baseline gap-1">
-                                                <span className="text-2xl font-bold tracking-tight">{storageStats.foomclous.used}</span>
+                                                <span className="text-2xl font-bold tracking-tight">{storageStats.flclouds.used}</span>
                                                 <span className="text-sm text-muted-foreground font-medium">
-                                                    ({storageStats.foomclous.fileCount} 个文件)
+                                                    ({storageStats.flclouds.fileCount} 个文件)
                                                 </span>
                                             </div>
                                         </div>

@@ -54,14 +54,14 @@ set +a
 
 docker build \
   --build-arg VITE_API_URL="${VITE_API_URL}" \
-  -t foomclous-frontend:latest \
+  -t flclouds-frontend:latest \
   ./frontend
 ```
 
 ### 4. 构建后端
 
 ```bash
-docker build -t foomclous-backend:latest ./backend
+docker build -t flclouds-backend:latest ./backend
 ```
 
 ### 5. 生成用户账号 session（可选）
@@ -236,8 +236,8 @@ FlClouds 内置支持 TOTP 双重验证（如 Google Authenticator）：
 
 默认从源码本地构建并使用以下镜像 tag：
 
-- `foomclous-frontend:latest`
-- `foomclous-backend:latest`
+- `flclouds-frontend:latest`
+- `flclouds-backend:latest`
 - `postgres:16-alpine`
 
 如果你修改了前端 API 地址或前端源码，请重新执行前端构建步骤。
@@ -257,10 +257,10 @@ set +a
 
 docker build \
   --build-arg VITE_API_URL="${VITE_API_URL}" \
-  -t foomclous-frontend:latest \
+  -t flclouds-frontend:latest \
   ./frontend
 
-docker build -t foomclous-backend:latest ./backend
+docker build -t flclouds-backend:latest ./backend
 
 docker compose up -d
 ```

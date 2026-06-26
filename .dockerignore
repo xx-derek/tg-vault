@@ -3,7 +3,7 @@ node_modules
 *.log
 .env.local
 dist
-foomclous.tar.gz
+flclouds.tar.gz
 verify_sanitization.js
 verify_sanitization.ts
 backend/*.sql
