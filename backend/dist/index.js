@@ -877,6 +877,8 @@ var init_storage = __esm({
       drive;
       tokenExpiresAt = 0;
       GOOGLE_DRIVE_FOLDER = "FlClouds";
+      folderIdCache = /* @__PURE__ */ new Map();
+      folderEnsureLocks = /* @__PURE__ */ new Map();
       static generateAuthUrl(clientId, clientSecret, redirectUri) {
         const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
         return oauth2Client.generateAuthUrl({
@@ -899,21 +901,28 @@ var init_storage = __esm({
       escapeDriveQuery(value) {
         return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
       }
-      async ensureFolderExists(folder) {
-        await this.ensureAuthenticated();
-        const segments = [this.GOOGLE_DRIVE_FOLDER, ...folder ? folder.split("/").filter(Boolean) : []];
-        let parentId = null;
-        for (const segment of segments) {
-          const parentClause = parentId ? `'${parentId}' in parents` : `'root' in parents`;
-          const response = await this.drive.files.list({
-            q: `name = '${this.escapeDriveQuery(segment)}' and mimeType = 'application/vnd.google-apps.folder' and ${parentClause} and trashed = false`,
-            fields: "files(id)",
-            spaces: "drive"
-          });
-          const existingFolderId = response.data.files?.[0]?.id;
+      async findFolderId(segment, parentId) {
+        const parentClause = parentId ? `'${parentId}' in parents` : `'root' in parents`;
+        const response = await this.drive.files.list({
+          q: `name = '${this.escapeDriveQuery(segment)}' and mimeType = 'application/vnd.google-apps.folder' and ${parentClause} and trashed = false`,
+          fields: "files(id, name, createdTime)",
+          orderBy: "createdTime",
+          spaces: "drive",
+          pageSize: 10
+        });
+        return response.data.files?.[0]?.id || null;
+      }
+      async ensureChildFolder(segment, parentId) {
+        const cacheKey = `${parentId || "root"}/${segment}`;
+        const cachedId = this.folderIdCache.get(cacheKey);
+        if (cachedId) return cachedId;
+        const existingLock = this.folderEnsureLocks.get(cacheKey);
+        if (existingLock) return existingLock;
+        const lock = (async () => {
+          const existingFolderId = await this.findFolderId(segment, parentId);
           if (existingFolderId) {
-            parentId = existingFolderId;
-            continue;
+            this.folderIdCache.set(cacheKey, existingFolderId);
+            return existingFolderId;
           }
           const folderMetadata = {
             name: segment,
@@ -924,7 +933,23 @@ var init_storage = __esm({
             resource: folderMetadata,
             fields: "id"
           });
-          parentId = createdFolder.data.id;
+          const createdId = createdFolder.data.id;
+          this.folderIdCache.set(cacheKey, createdId);
+          return createdId;
+        })();
+        this.folderEnsureLocks.set(cacheKey, lock);
+        try {
+          return await lock;
+        } finally {
+          this.folderEnsureLocks.delete(cacheKey);
+        }
+      }
+      async ensureFolderExists(folder) {
+        await this.ensureAuthenticated();
+        const segments = [this.GOOGLE_DRIVE_FOLDER, ...folder ? folder.split("/").filter(Boolean) : []];
+        let parentId = null;
+        for (const segment of segments) {
+          parentId = await this.ensureChildFolder(segment, parentId);
         }
         return parentId;
       }
@@ -1966,17 +1991,17 @@ function buildSilentModeNotice(fileCount) {
     `\u{1F4A1} \u53D1\u9001 /tasks \u67E5\u770B\u5B9E\u65F6\u4EFB\u52A1\u72B6\u6001`
   ].join("\n");
 }
-function buildSilentProgress(sessionTotal, batches, singleFiles = []) {
+function buildSilentProgress(sessionTotal, batches, singleFiles = [], sessionCompleted = 0, sessionFailed = 0) {
   const totalBatchFiles = batches.reduce((sum, batch) => sum + batch.totalFiles, 0);
   const completedBatchFiles = batches.reduce((sum, batch) => sum + batch.completed, 0);
   const successfulBatchFiles = batches.reduce((sum, batch) => sum + batch.successful, 0);
   const failedBatchFiles = batches.reduce((sum, batch) => sum + batch.failed, 0);
   const completedSingleFiles = singleFiles.filter((file) => file.phase === "success" || file.phase === "failed").length;
   const failedSingleFiles = singleFiles.filter((file) => file.phase === "failed").length;
-  const totalFiles = Math.max(sessionTotal, totalBatchFiles + singleFiles.length, completedBatchFiles + completedSingleFiles);
-  const completedFiles = completedBatchFiles + completedSingleFiles;
-  const failedFiles = failedBatchFiles + failedSingleFiles;
-  const successfulFiles = successfulBatchFiles + completedSingleFiles - failedSingleFiles;
+  const totalFiles = Math.max(sessionTotal, totalBatchFiles + singleFiles.length, completedBatchFiles + completedSingleFiles, sessionCompleted);
+  const completedFiles = Math.max(sessionCompleted, completedBatchFiles + completedSingleFiles);
+  const failedFiles = Math.max(sessionFailed, failedBatchFiles + failedSingleFiles);
+  const successfulFiles = Math.max(0, completedFiles - failedFiles);
   const remainingFiles = Math.max(0, totalFiles - completedFiles);
   const activeBatch = batches.find((batch) => batch.completed < batch.totalFiles);
   const activeSingle = singleFiles.find((file) => !["success", "failed"].includes(file.phase));
@@ -2494,7 +2519,14 @@ function normalizeSegment(value, fallback) {
 }
 function getEntityDisplayName(entity) {
   if (!entity) return null;
-  return entity.title || entity.username || [entity.firstName, entity.lastName].filter(Boolean).join(" ") || null;
+  const personalName = [entity.firstName, entity.lastName].filter(Boolean).join(" ");
+  return entity.title || personalName || entity.username || null;
+}
+function addUniqueSegment(segments, value, fallback) {
+  const segment = normalizeSegment(value, fallback);
+  if (segments[segments.length - 1] !== segment) {
+    segments.push(segment);
+  }
 }
 function getForwardedSourceName(fwdFrom) {
   return fwdFrom?.postAuthor || fwdFrom?.fromName || fwdFrom?.savedFromName || null;
@@ -2510,13 +2542,13 @@ function buildStorageFolderWithRules(options, rules) {
   }
   const segments = [];
   if (rules.bySource) {
-    segments.push(normalizeSegment(options.source, "uploads"));
+    addUniqueSegment(segments, options.source, "uploads");
     if (options.chatName) {
-      segments.push(normalizeSegment(options.chatName, "chat"));
+      addUniqueSegment(segments, options.chatName, "chat");
     }
   }
   if (options.folder) {
-    segments.push(normalizeSegment(options.folder, "folder"));
+    addUniqueSegment(segments, options.folder, "folder");
   }
   if (rules.byType) {
     const typeFolder = getDetailedTypeFolder(options.mimeType, options.fileName);
@@ -2870,13 +2902,13 @@ var silentSessionMap = /* @__PURE__ */ new Map();
 function getSilentSession(chatIdStr) {
   let s = silentSessionMap.get(chatIdStr);
   if (!s) {
-    s = { total: 0, completed: 0, failed: 0, knownTaskKeys: /* @__PURE__ */ new Set() };
+    s = { total: 0, completed: 0, failed: 0, knownTaskKeys: /* @__PURE__ */ new Set(), knownTaskCounts: /* @__PURE__ */ new Map() };
     silentSessionMap.set(chatIdStr, s);
   }
   return s;
 }
 function startSilentSession(chatIdStr, total) {
-  const s = { total, completed: 0, failed: 0, knownTaskKeys: /* @__PURE__ */ new Set() };
+  const s = { total, completed: 0, failed: 0, knownTaskKeys: /* @__PURE__ */ new Set(), knownTaskCounts: /* @__PURE__ */ new Map() };
   silentSessionMap.set(chatIdStr, s);
   return s;
 }
@@ -2925,8 +2957,10 @@ async function trySilentMode(client2, chatId, message) {
   if (fileCount > 3 || isSilent) {
     if (!isSilent) {
       await deleteLastStatusMessage(client2, chatId);
-      startSilentSession(chatIdStr, 0);
-      syncSilentSessionTotals(chatIdStr);
+      const transferSession = syncChatTransferSession(chatIdStr);
+      const silentSession = startSilentSession(chatIdStr, transferSession.total);
+      silentSession.knownTaskKeys = new Set(transferSession.knownTaskKeys);
+      silentSession.knownTaskCounts = new Map(transferSession.knownTaskCounts);
       console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} files=${fileCount}`);
     } else {
       syncSilentSessionTotals(chatIdStr);
@@ -2962,18 +2996,62 @@ function updateLastStatusMessageId(chatId, msgId, isSilent = false) {
     console.log(`[TG][status] last chat=${chatIdStr} msg=${msgId} sess=${sess}`);
   }
 }
+var chatTransferSessions = /* @__PURE__ */ new Map();
+function getChatTransferSession(chatId) {
+  let session = chatTransferSessions.get(chatId);
+  if (!session) {
+    session = { total: 0, completed: 0, failed: 0, knownTaskKeys: /* @__PURE__ */ new Set(), knownTaskCounts: /* @__PURE__ */ new Map() };
+    chatTransferSessions.set(chatId, session);
+  }
+  return session;
+}
+function updateTaskCount(totalTracker, key, count) {
+  const previousCount = totalTracker.knownTaskCounts.get(key) || 0;
+  if (count > previousCount) {
+    totalTracker.total += count - previousCount;
+    totalTracker.knownTaskCounts.set(key, count);
+  }
+  totalTracker.knownTaskKeys.add(key);
+}
+function syncChatTransferSession(chatId) {
+  const session = getChatTransferSession(chatId);
+  const batches = getConsolidatedBatches(chatId);
+  for (const batch of batches) {
+    const key = `batch:${batch.id}`;
+    updateTaskCount(session, key, batch.totalFiles);
+  }
+  const files = getConsolidatedFiles(chatId);
+  for (const file of files) {
+    const key = `file:${file.id || file.fileName}`;
+    updateTaskCount(session, key, 1);
+  }
+  const completedBatches = batches.reduce((sum, batch) => sum + batch.completed, 0);
+  const failedBatches = batches.reduce((sum, batch) => sum + batch.failed, 0);
+  const completedFiles = files.filter((file) => file.phase === "success" || file.phase === "failed").length;
+  const failedFiles = files.filter((file) => file.phase === "failed").length;
+  session.completed = Math.max(session.completed, completedBatches + completedFiles);
+  session.failed = Math.max(session.failed, failedBatches + failedFiles);
+  return session;
+}
+function resetChatTransferSession(chatId) {
+  chatTransferSessions.delete(chatId);
+}
 var chatActiveUploads = /* @__PURE__ */ new Map();
 function registerUpload(chatId, uploadId, entry) {
   if (!chatActiveUploads.has(chatId)) {
     chatActiveUploads.set(chatId, /* @__PURE__ */ new Map());
   }
-  chatActiveUploads.get(chatId).set(uploadId, entry);
+  chatActiveUploads.get(chatId).set(uploadId, { ...entry, id: uploadId });
+  syncChatTransferSession(chatId);
 }
 function updateUploadPhase(chatId, uploadId, updates) {
   const map = chatActiveUploads.get(chatId);
   if (!map) return;
   const entry = map.get(uploadId);
-  if (entry) Object.assign(entry, updates);
+  if (entry) {
+    Object.assign(entry, updates);
+    syncChatTransferSession(chatId);
+  }
 }
 function removeUpload(chatId, uploadId) {
   const map = chatActiveUploads.get(chatId);
@@ -2996,12 +3074,16 @@ function registerBatch(chatId, batchId, entry) {
     chatActiveBatches.set(chatId, /* @__PURE__ */ new Map());
   }
   chatActiveBatches.get(chatId).set(batchId, entry);
+  syncChatTransferSession(chatId);
 }
 function updateBatch(chatId, batchId, updates) {
   const map = chatActiveBatches.get(chatId);
   if (!map) return;
   const entry = map.get(batchId);
-  if (entry) Object.assign(entry, updates);
+  if (entry) {
+    Object.assign(entry, updates);
+    syncChatTransferSession(chatId);
+  }
 }
 function removeBatch(chatId, batchId) {
   const map = chatActiveBatches.get(chatId);
@@ -3040,22 +3122,16 @@ function getOutstandingTaskCount(chatIdStr) {
 function syncSilentSessionTotals(chatIdStr) {
   const session = silentSessionMap.get(chatIdStr);
   if (!session) return null;
-  const batches = getConsolidatedBatches(chatIdStr);
-  for (const batch of batches) {
-    const key = `batch:${batch.id}`;
-    if (!session.knownTaskKeys.has(key)) {
-      session.knownTaskKeys.add(key);
-      session.total += batch.totalFiles;
-    }
+  const transferSession = syncChatTransferSession(chatIdStr);
+  for (const key of transferSession.knownTaskKeys) {
+    session.knownTaskKeys.add(key);
   }
-  const files = getConsolidatedFiles(chatIdStr);
-  for (const file of files) {
-    const key = `file:${file.fileName}`;
-    if (!session.knownTaskKeys.has(key)) {
-      session.knownTaskKeys.add(key);
-      session.total += 1;
-    }
+  for (const [key, count] of transferSession.knownTaskCounts) {
+    updateTaskCount(session, key, count);
   }
+  session.total = Math.max(session.total, transferSession.total);
+  session.completed = Math.max(session.completed, transferSession.completed);
+  session.failed = Math.max(session.failed, transferSession.failed);
   return session;
 }
 async function refreshSilentProgress(client2, chatId) {
@@ -3066,7 +3142,7 @@ async function refreshSilentProgress(client2, chatId) {
   const session = syncSilentSessionTotals(chatIdStr) || getSilentSession(chatIdStr);
   const batches = getConsolidatedBatches(chatIdStr);
   const files = getConsolidatedFiles(chatIdStr);
-  const text = buildSilentProgress(session.total, batches, files);
+  const text = buildSilentProgress(session.total, batches, files, session.completed, session.failed);
   await safeEditMessage(client2, chatId, { message: silentMsgId, text });
 }
 async function checkAndResetSession(client2, chatId) {
@@ -3089,6 +3165,7 @@ async function checkAndResetSession(client2, chatId) {
   if (!hasAnyTask || isAllConsolidatedTasksDone(chatIdStr)) {
     await deleteLastStatusMessage(client2, chatId);
     clearConsolidatedState(chatIdStr);
+    resetChatTransferSession(chatIdStr);
   }
 }
 async function refreshConsolidatedMessage(client2, chatId, replyTo) {

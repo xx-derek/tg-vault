@@ -463,17 +463,23 @@ interface SilentProgressFile {
     total?: number;
 }
 
-export function buildSilentProgress(sessionTotal: number, batches: SilentProgressBatch[], singleFiles: SilentProgressFile[] = []): string {
+export function buildSilentProgress(
+    sessionTotal: number,
+    batches: SilentProgressBatch[],
+    singleFiles: SilentProgressFile[] = [],
+    sessionCompleted: number = 0,
+    sessionFailed: number = 0,
+): string {
     const totalBatchFiles = batches.reduce((sum, batch) => sum + batch.totalFiles, 0);
     const completedBatchFiles = batches.reduce((sum, batch) => sum + batch.completed, 0);
     const successfulBatchFiles = batches.reduce((sum, batch) => sum + batch.successful, 0);
     const failedBatchFiles = batches.reduce((sum, batch) => sum + batch.failed, 0);
     const completedSingleFiles = singleFiles.filter(file => file.phase === 'success' || file.phase === 'failed').length;
     const failedSingleFiles = singleFiles.filter(file => file.phase === 'failed').length;
-    const totalFiles = Math.max(sessionTotal, totalBatchFiles + singleFiles.length, completedBatchFiles + completedSingleFiles);
-    const completedFiles = completedBatchFiles + completedSingleFiles;
-    const failedFiles = failedBatchFiles + failedSingleFiles;
-    const successfulFiles = successfulBatchFiles + completedSingleFiles - failedSingleFiles;
+    const totalFiles = Math.max(sessionTotal, totalBatchFiles + singleFiles.length, completedBatchFiles + completedSingleFiles, sessionCompleted);
+    const completedFiles = Math.max(sessionCompleted, completedBatchFiles + completedSingleFiles);
+    const failedFiles = Math.max(sessionFailed, failedBatchFiles + failedSingleFiles);
+    const successfulFiles = Math.max(0, completedFiles - failedFiles);
     const remainingFiles = Math.max(0, totalFiles - completedFiles);
     const activeBatch = batches.find(batch => batch.completed < batch.totalFiles);
     const activeSingle = singleFiles.find(file => !['success', 'failed'].includes(file.phase));

@@ -405,6 +405,7 @@ interface SilentSession {
     completed: number;
     failed: number;
     knownTaskKeys: Set<string>;
+    knownTaskCounts: Map<string, number>;
 }
 
 const silentSessionMap = new Map<string, SilentSession>();
@@ -412,14 +413,14 @@ const silentSessionMap = new Map<string, SilentSession>();
 function getSilentSession(chatIdStr: string): SilentSession {
     let s = silentSessionMap.get(chatIdStr);
     if (!s) {
-        s = { total: 0, completed: 0, failed: 0, knownTaskKeys: new Set() };
+        s = { total: 0, completed: 0, failed: 0, knownTaskKeys: new Set(), knownTaskCounts: new Map() };
         silentSessionMap.set(chatIdStr, s);
     }
     return s;
 }
 
 function startSilentSession(chatIdStr: string, total: number): SilentSession {
-    const s = { total, completed: 0, failed: 0, knownTaskKeys: new Set<string>() };
+    const s = { total, completed: 0, failed: 0, knownTaskKeys: new Set<string>(), knownTaskCounts: new Map<string, number>() };
     silentSessionMap.set(chatIdStr, s);
     return s;
 }
@@ -489,8 +490,10 @@ async function trySilentMode(client: TelegramClient, chatId: Api.TypeEntityLike,
         if (!isSilent) {
             // 首次进入静默模式
             await deleteLastStatusMessage(client, chatId);
-            startSilentSession(chatIdStr, 0);
-            syncSilentSessionTotals(chatIdStr);
+            const transferSession = syncChatTransferSession(chatIdStr);
+            const silentSession = startSilentSession(chatIdStr, transferSession.total);
+            silentSession.knownTaskKeys = new Set(transferSession.knownTaskKeys);
+            silentSession.knownTaskCounts = new Map(transferSession.knownTaskCounts);
             console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} files=${fileCount}`);
         } else {
             // 已在静默模式，更新已知任务集合，保持总数为会话累计文件数
@@ -540,6 +543,7 @@ function updateLastStatusMessageId(chatId: Api.TypeEntityLike | undefined, msgId
 // ─── 单文件合并状态追踪器 ──────────────────────────────────────
 
 interface ActiveUploadEntry {
+    id?: string;
     fileName: string;
     typeEmoji: string;
     phase: ConsolidatedUploadFile['phase'];
@@ -552,6 +556,63 @@ interface ActiveUploadEntry {
     folder?: string | null;
 }
 
+interface ChatTransferSession {
+    total: number;
+    completed: number;
+    failed: number;
+    knownTaskKeys: Set<string>;
+    knownTaskCounts: Map<string, number>;
+}
+
+const chatTransferSessions = new Map<string, ChatTransferSession>();
+
+function getChatTransferSession(chatId: string): ChatTransferSession {
+    let session = chatTransferSessions.get(chatId);
+    if (!session) {
+        session = { total: 0, completed: 0, failed: 0, knownTaskKeys: new Set(), knownTaskCounts: new Map() };
+        chatTransferSessions.set(chatId, session);
+    }
+    return session;
+}
+
+function updateTaskCount(totalTracker: Pick<ChatTransferSession, 'total' | 'knownTaskKeys' | 'knownTaskCounts'>, key: string, count: number) {
+    const previousCount = totalTracker.knownTaskCounts.get(key) || 0;
+    if (count > previousCount) {
+        totalTracker.total += count - previousCount;
+        totalTracker.knownTaskCounts.set(key, count);
+    }
+    totalTracker.knownTaskKeys.add(key);
+}
+
+function syncChatTransferSession(chatId: string): ChatTransferSession {
+    const session = getChatTransferSession(chatId);
+
+    const batches = getConsolidatedBatches(chatId);
+    for (const batch of batches) {
+        const key = `batch:${batch.id}`;
+        updateTaskCount(session, key, batch.totalFiles);
+    }
+
+    const files = getConsolidatedFiles(chatId);
+    for (const file of files) {
+        const key = `file:${file.id || file.fileName}`;
+        updateTaskCount(session, key, 1);
+    }
+
+    const completedBatches = batches.reduce((sum, batch) => sum + batch.completed, 0);
+    const failedBatches = batches.reduce((sum, batch) => sum + batch.failed, 0);
+    const completedFiles = files.filter(file => file.phase === 'success' || file.phase === 'failed').length;
+    const failedFiles = files.filter(file => file.phase === 'failed').length;
+    session.completed = Math.max(session.completed, completedBatches + completedFiles);
+    session.failed = Math.max(session.failed, failedBatches + failedFiles);
+
+    return session;
+}
+
+function resetChatTransferSession(chatId: string) {
+    chatTransferSessions.delete(chatId);
+}
+
 // 每个 chat 的当前活跃单文件上传列表
 const chatActiveUploads = new Map<string, Map<string, ActiveUploadEntry>>();
 
@@ -559,14 +620,18 @@ function registerUpload(chatId: string, uploadId: string, entry: ActiveUploadEnt
     if (!chatActiveUploads.has(chatId)) {
         chatActiveUploads.set(chatId, new Map());
     }
-    chatActiveUploads.get(chatId)!.set(uploadId, entry);
+    chatActiveUploads.get(chatId)!.set(uploadId, { ...entry, id: uploadId });
+    syncChatTransferSession(chatId);
 }
 
 function updateUploadPhase(chatId: string, uploadId: string, updates: Partial<ActiveUploadEntry>) {
     const map = chatActiveUploads.get(chatId);
     if (!map) return;
     const entry = map.get(uploadId);
-    if (entry) Object.assign(entry, updates);
+    if (entry) {
+        Object.assign(entry, updates);
+        syncChatTransferSession(chatId);
+    }
 }
 
 function removeUpload(chatId: string, uploadId: string) {
@@ -595,13 +660,17 @@ function registerBatch(chatId: string, batchId: string, entry: ConsolidatedBatch
         chatActiveBatches.set(chatId, new Map());
     }
     chatActiveBatches.get(chatId)!.set(batchId, entry);
+    syncChatTransferSession(chatId);
 }
 
 function updateBatch(chatId: string, batchId: string, updates: Partial<ConsolidatedBatchEntry>) {
     const map = chatActiveBatches.get(chatId);
     if (!map) return;
     const entry = map.get(batchId);
-    if (entry) Object.assign(entry, updates);
+    if (entry) {
+        Object.assign(entry, updates);
+        syncChatTransferSession(chatId);
+    }
 }
 
 function removeBatch(chatId: string, batchId: string) {
@@ -649,23 +718,16 @@ function syncSilentSessionTotals(chatIdStr: string): SilentSession | null {
     const session = silentSessionMap.get(chatIdStr);
     if (!session) return null;
 
-    const batches = getConsolidatedBatches(chatIdStr);
-    for (const batch of batches) {
-        const key = `batch:${batch.id}`;
-        if (!session.knownTaskKeys.has(key)) {
-            session.knownTaskKeys.add(key);
-            session.total += batch.totalFiles;
-        }
+    const transferSession = syncChatTransferSession(chatIdStr);
+    for (const key of transferSession.knownTaskKeys) {
+        session.knownTaskKeys.add(key);
     }
-
-    const files = getConsolidatedFiles(chatIdStr);
-    for (const file of files) {
-        const key = `file:${file.fileName}`;
-        if (!session.knownTaskKeys.has(key)) {
-            session.knownTaskKeys.add(key);
-            session.total += 1;
-        }
+    for (const [key, count] of transferSession.knownTaskCounts) {
+        updateTaskCount(session, key, count);
     }
+    session.total = Math.max(session.total, transferSession.total);
+    session.completed = Math.max(session.completed, transferSession.completed);
+    session.failed = Math.max(session.failed, transferSession.failed);
 
     return session;
 }
@@ -679,7 +741,7 @@ async function refreshSilentProgress(client: TelegramClient, chatId: Api.TypeEnt
     const session = syncSilentSessionTotals(chatIdStr) || getSilentSession(chatIdStr);
     const batches = getConsolidatedBatches(chatIdStr);
     const files = getConsolidatedFiles(chatIdStr);
-    const text = buildSilentProgress(session.total, batches, files);
+    const text = buildSilentProgress(session.total, batches, files, session.completed, session.failed);
     await safeEditMessage(client, chatId, { message: silentMsgId, text });
 }
 
@@ -712,6 +774,7 @@ async function checkAndResetSession(client: TelegramClient, chatId: Api.TypeEnti
     if (!hasAnyTask || isAllConsolidatedTasksDone(chatIdStr)) {
         await deleteLastStatusMessage(client, chatId);
         clearConsolidatedState(chatIdStr);
+        resetChatTransferSession(chatIdStr);
     }
 }
 

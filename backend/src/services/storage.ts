@@ -879,6 +879,8 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
     private drive: any;
     private tokenExpiresAt: number = 0;
     private readonly GOOGLE_DRIVE_FOLDER = 'FlClouds';
+    private folderIdCache = new Map<string, string>();
+    private folderEnsureLocks = new Map<string, Promise<string>>();
 
     constructor(
         public id: string,
@@ -924,23 +926,31 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
-    private async ensureFolderExists(folder?: string | null): Promise<string> {
-        await this.ensureAuthenticated();
-        const segments = [this.GOOGLE_DRIVE_FOLDER, ...(folder ? folder.split('/').filter(Boolean) : [])];
-        let parentId: string | null = null;
+    private async findFolderId(segment: string, parentId: string | null): Promise<string | null> {
+        const parentClause: string = parentId ? `'${parentId}' in parents` : `'root' in parents`;
+        const response: any = await this.drive.files.list({
+            q: `name = '${this.escapeDriveQuery(segment)}' and mimeType = 'application/vnd.google-apps.folder' and ${parentClause} and trashed = false`,
+            fields: 'files(id, name, createdTime)',
+            orderBy: 'createdTime',
+            spaces: 'drive',
+            pageSize: 10,
+        });
+        return response.data.files?.[0]?.id || null;
+    }
 
-        for (const segment of segments) {
-            const parentClause: string = parentId ? `'${parentId}' in parents` : `'root' in parents`;
-            const response: any = await this.drive.files.list({
-                q: `name = '${this.escapeDriveQuery(segment)}' and mimeType = 'application/vnd.google-apps.folder' and ${parentClause} and trashed = false`,
-                fields: 'files(id)',
-                spaces: 'drive'
-            });
+    private async ensureChildFolder(segment: string, parentId: string | null): Promise<string> {
+        const cacheKey = `${parentId || 'root'}/${segment}`;
+        const cachedId = this.folderIdCache.get(cacheKey);
+        if (cachedId) return cachedId;
 
-            const existingFolderId = response.data.files?.[0]?.id;
+        const existingLock = this.folderEnsureLocks.get(cacheKey);
+        if (existingLock) return existingLock;
+
+        const lock = (async () => {
+            const existingFolderId = await this.findFolderId(segment, parentId);
             if (existingFolderId) {
-                parentId = existingFolderId;
-                continue;
+                this.folderIdCache.set(cacheKey, existingFolderId);
+                return existingFolderId;
             }
 
             const folderMetadata: any = {
@@ -953,7 +963,26 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
                 resource: folderMetadata,
                 fields: 'id'
             });
-            parentId = createdFolder.data.id;
+            const createdId = createdFolder.data.id;
+            this.folderIdCache.set(cacheKey, createdId);
+            return createdId;
+        })();
+
+        this.folderEnsureLocks.set(cacheKey, lock);
+        try {
+            return await lock;
+        } finally {
+            this.folderEnsureLocks.delete(cacheKey);
+        }
+    }
+
+    private async ensureFolderExists(folder?: string | null): Promise<string> {
+        await this.ensureAuthenticated();
+        const segments = [this.GOOGLE_DRIVE_FOLDER, ...(folder ? folder.split('/').filter(Boolean) : [])];
+        let parentId: string | null = null;
+
+        for (const segment of segments) {
+            parentId = await this.ensureChildFolder(segment, parentId);
         }
 
         return parentId!;

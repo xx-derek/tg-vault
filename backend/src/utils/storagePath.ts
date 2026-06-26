@@ -113,7 +113,15 @@ function normalizeSegment(value: string | null | undefined, fallback: string): s
 
 function getEntityDisplayName(entity: any): string | null {
     if (!entity) return null;
-    return entity.title || entity.username || [entity.firstName, entity.lastName].filter(Boolean).join(' ') || null;
+    const personalName = [entity.firstName, entity.lastName].filter(Boolean).join(' ');
+    return entity.title || personalName || entity.username || null;
+}
+
+function addUniqueSegment(segments: string[], value: string | null | undefined, fallback: string) {
+    const segment = normalizeSegment(value, fallback);
+    if (segments[segments.length - 1] !== segment) {
+        segments.push(segment);
+    }
 }
 
 export function getForwardedSourceName(fwdFrom: any): string | null {
@@ -140,15 +148,15 @@ export function buildStorageFolderWithRules(options: StoragePathOptions, rules: 
 
     const segments: string[] = [];
     if (rules.bySource) {
-        segments.push(normalizeSegment(options.source, 'uploads'));
+        addUniqueSegment(segments, options.source, 'uploads');
 
         if (options.chatName) {
-            segments.push(normalizeSegment(options.chatName, 'chat'));
+            addUniqueSegment(segments, options.chatName, 'chat');
         }
     }
 
     if (options.folder) {
-        segments.push(normalizeSegment(options.folder, 'folder'));
+        addUniqueSegment(segments, options.folder, 'folder');
     }
 
     if (rules.byType) {
