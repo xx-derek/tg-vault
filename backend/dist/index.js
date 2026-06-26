@@ -107,6 +107,44 @@ var init_db = __esm({
   }
 });
 
+// src/utils/localPath.ts
+import fs2 from "fs";
+import path2 from "path";
+function isPathInside(baseDir, targetPath) {
+  const resolvedBase = path2.resolve(baseDir);
+  const resolvedTarget = path2.resolve(targetPath);
+  return resolvedTarget === resolvedBase || resolvedTarget.startsWith(resolvedBase + path2.sep);
+}
+function safeJoin(baseDir, ...segments) {
+  const resolvedBase = path2.resolve(baseDir);
+  const resolvedTarget = path2.resolve(resolvedBase, ...segments);
+  if (!isPathInside(resolvedBase, resolvedTarget)) {
+    throw new Error("Unsafe path outside storage directory");
+  }
+  return resolvedTarget;
+}
+function getRelativeStoragePath(baseDir, targetPath) {
+  const resolvedBase = path2.resolve(baseDir);
+  const resolvedTarget = path2.resolve(targetPath);
+  if (!isPathInside(resolvedBase, resolvedTarget)) return null;
+  return path2.relative(resolvedBase, resolvedTarget).split(path2.sep).join("/");
+}
+async function safeUnlink(filePath, baseDir) {
+  if (!filePath) return false;
+  if (!isPathInside(baseDir, filePath)) {
+    console.warn(`Refusing to delete path outside storage directory: ${filePath}`);
+    return false;
+  }
+  if (!fs2.existsSync(filePath)) return false;
+  await fs2.promises.unlink(filePath);
+  return true;
+}
+var init_localPath = __esm({
+  "src/utils/localPath.ts"() {
+    "use strict";
+  }
+});
+
 // src/services/storage.ts
 var storage_exports = {};
 __export(storage_exports, {
@@ -119,8 +157,8 @@ __export(storage_exports, {
   WebDAVStorageProvider: () => WebDAVStorageProvider,
   storageManager: () => storageManager
 });
-import fs2 from "fs";
-import path2 from "path";
+import fs3 from "fs";
+import path3 from "path";
 import axios from "axios";
 import OSS from "ali-oss";
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
@@ -132,27 +170,28 @@ var init_storage = __esm({
   "src/services/storage.ts"() {
     "use strict";
     init_db();
+    init_localPath();
     LocalStorageProvider = class {
       name = "local";
       uploadDir;
       constructor(uploadDir = process.env.UPLOAD_DIR || "./data/uploads") {
-        this.uploadDir = uploadDir;
-        if (!fs2.existsSync(this.uploadDir)) {
-          fs2.mkdirSync(this.uploadDir, { recursive: true });
+        this.uploadDir = path3.resolve(uploadDir);
+        if (!fs3.existsSync(this.uploadDir)) {
+          fs3.mkdirSync(this.uploadDir, { recursive: true });
         }
       }
       async saveFile(tempPath, fileName, _mimeType, folder) {
-        const destDir = folder ? path2.join(this.uploadDir, folder) : this.uploadDir;
-        if (!fs2.existsSync(destDir)) {
-          fs2.mkdirSync(destDir, { recursive: true });
+        const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
+        if (!fs3.existsSync(destDir)) {
+          fs3.mkdirSync(destDir, { recursive: true });
         }
-        const destPath = path2.join(destDir, fileName);
+        const destPath = safeJoin(destDir, fileName);
         try {
-          await fs2.promises.rename(tempPath, destPath);
+          await fs3.promises.rename(tempPath, destPath);
         } catch (error) {
           if (error.code === "EXDEV") {
-            await fs2.promises.copyFile(tempPath, destPath);
-            await fs2.promises.unlink(tempPath);
+            await fs3.promises.copyFile(tempPath, destPath);
+            await fs3.promises.unlink(tempPath);
           } else {
             throw error;
           }
@@ -160,17 +199,25 @@ var init_storage = __esm({
         return destPath;
       }
       async getFileStream(storedPath) {
-        if (!fs2.existsSync(storedPath)) {
-          throw new Error(`File not found: ${storedPath}`);
+        const safePath = safeJoin(this.uploadDir, path3.relative(this.uploadDir, storedPath));
+        if (safePath !== path3.resolve(storedPath)) {
+          throw new Error("Unsafe local file path");
         }
-        return fs2.createReadStream(storedPath);
+        if (!fs3.existsSync(safePath)) {
+          throw new Error(`File not found: ${safePath}`);
+        }
+        return fs3.createReadStream(safePath);
       }
       async getPreviewUrl(storedPath) {
         return "";
       }
       async deleteFile(storedPath) {
-        if (fs2.existsSync(storedPath)) {
-          await fs2.promises.unlink(storedPath);
+        const safePath = safeJoin(this.uploadDir, path3.relative(this.uploadDir, storedPath));
+        if (safePath !== path3.resolve(storedPath)) {
+          throw new Error("Unsafe local file path");
+        }
+        if (fs3.existsSync(safePath)) {
+          await fs3.promises.unlink(safePath);
         }
       }
       async createShareLink(storedPath, password, expiration) {
@@ -270,7 +317,7 @@ var init_storage = __esm({
       client;
       async saveFile(tempPath, fileName, mimeType, folder) {
         try {
-          const fileBuffer = fs2.readFileSync(tempPath);
+          const fileBuffer = fs3.readFileSync(tempPath);
           const objectKey = folder ? `${folder}/${fileName}` : fileName;
           const command = new PutObjectCommand({
             Bucket: this.bucket,
@@ -351,7 +398,7 @@ var init_storage = __esm({
       client;
       async saveFile(tempPath, fileName, _mimeType, folder) {
         try {
-          const fileBuffer = fs2.readFileSync(tempPath);
+          const fileBuffer = fs3.readFileSync(tempPath);
           const remotePath = folder ? `${folder}/${fileName}` : fileName;
           if (folder) {
             await this.client.createDirectory(`/${folder}`, { recursive: true });
@@ -542,7 +589,7 @@ var init_storage = __esm({
        */
       async saveFile(tempPath, fileName, mimeType, folder) {
         const token = await this.getAccessToken();
-        const stats = await fs2.promises.stat(tempPath);
+        const stats = await fs3.promises.stat(tempPath);
         const fileSize = stats.size;
         console.log(`[OneDrive] Uploading file: ${fileName}, size: ${fileSize} bytes, type: ${mimeType}`);
         const uploadFolder = await this.ensureFolderExists(token, folder);
@@ -550,7 +597,7 @@ var init_storage = __esm({
         try {
           if (fileSize < 4 * 1024 * 1024) {
             console.log("[OneDrive] Using simple upload for small file");
-            const fileBuffer = await fs2.promises.readFile(tempPath);
+            const fileBuffer = await fs3.promises.readFile(tempPath);
             const response = await axios.put(
               `https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(uploadFolder)}/${encodedFileName}:/content`,
               fileBuffer,
@@ -590,7 +637,7 @@ var init_storage = __esm({
             const CHUNK_SIZE = 320 * 1024 * 10;
             let uploadedBytes = 0;
             let lastResponse = null;
-            const fd = await fs2.promises.open(tempPath, "r");
+            const fd = await fs3.promises.open(tempPath, "r");
             try {
               while (uploadedBytes < fileSize) {
                 const chunkSize = Math.min(CHUNK_SIZE, fileSize - uploadedBytes);
@@ -890,7 +937,7 @@ var init_storage = __esm({
         };
         const media = {
           mimeType,
-          body: fs2.createReadStream(tempPath)
+          body: fs3.createReadStream(tempPath)
         };
         try {
           const file = await this.drive.files.create({
@@ -1300,14 +1347,14 @@ var init_storage = __esm({
 import express from "express";
 import cors from "cors";
 import dotenv3 from "dotenv";
-import path16 from "path";
+import path17 from "path";
 import fs14 from "fs";
 
 // src/routes/files.ts
 init_db();
 import { Router as Router2 } from "express";
 import fs10 from "fs";
-import path12 from "path";
+import path13 from "path";
 
 // src/middleware/signedUrl.ts
 import crypto6 from "crypto";
@@ -1435,7 +1482,7 @@ import { StringSession as StringSession2 } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/index.js";
 import fs9 from "fs";
-import path11 from "path";
+import path12 from "path";
 
 // src/services/telegramState.ts
 init_db();
@@ -1475,11 +1522,10 @@ init_db();
 import { Api as Api2 } from "telegram";
 import checkDiskSpaceModule from "check-disk-space";
 import os from "os";
-import fs7 from "fs";
 
 // src/utils/telegramUtils.ts
 import crypto2 from "crypto";
-import path3 from "path";
+import path4 from "path";
 var ACCESS_PASSWORD_HASH2 = process.env.ACCESS_PASSWORD_HASH || "";
 function verifyPassword(password) {
   if (!ACCESS_PASSWORD_HASH2) {
@@ -1528,7 +1574,7 @@ function getFileType(mimeType) {
   return "other";
 }
 function getMimeTypeFromFilename(filename) {
-  const ext = path3.extname(filename).toLowerCase();
+  const ext = path4.extname(filename).toLowerCase();
   const mimeTypes = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -1586,7 +1632,7 @@ function getMimeTypeFromFilename(filename) {
 function sanitizeFilename(name) {
   if (!name) return "unknown";
   const firstLine = name.split("\n")[0].trim();
-  const originalExt = path3.extname(firstLine);
+  const originalExt = path4.extname(firstLine);
   const ext = originalExt && originalExt.length <= 15 ? originalExt : "";
   const withoutExt = ext ? firstLine.slice(0, -ext.length) : firstLine;
   let sanitized = withoutExt.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/\s+/g, " ").trim();
@@ -2114,30 +2160,30 @@ function buildCleanupNotice(deletedCount, freedSpace) {
 // src/services/telegramUpload.ts
 init_db();
 import { Api } from "telegram";
-import fs5 from "fs";
-import path8 from "path";
+import fs6 from "fs";
+import path9 from "path";
 import crypto4 from "crypto";
 import bigInt from "big-integer";
 
 // src/utils/thumbnail.ts
-import path4 from "path";
+import path5 from "path";
 import sharp from "sharp";
 import ffmpeg from "fluent-ffmpeg";
-import fs3 from "fs";
+import fs4 from "fs";
 import crypto3 from "crypto";
-var THUMBNAIL_DIR = path4.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
-if (!fs3.existsSync(THUMBNAIL_DIR)) {
-  fs3.mkdirSync(THUMBNAIL_DIR, { recursive: true });
+var THUMBNAIL_DIR = path5.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
+if (!fs4.existsSync(THUMBNAIL_DIR)) {
+  fs4.mkdirSync(THUMBNAIL_DIR, { recursive: true });
 }
 async function generateThumbnail(filePath, storedName, mimeType) {
-  const absFilePath = path4.resolve(filePath);
+  const absFilePath = path5.resolve(filePath);
   const thumbName = `thumb_${crypto3.randomUUID()}.webp`;
-  const thumbPath = path4.join(THUMBNAIL_DIR, thumbName);
+  const thumbPath = path5.join(THUMBNAIL_DIR, thumbName);
   console.log(`[Thumbnail] \u{1F680} Starting generation for: ${storedName}`);
   console.log(`[Thumbnail] Source: ${absFilePath}`);
   console.log(`[Thumbnail] Target: ${thumbPath}`);
   console.log(`[Thumbnail] MIME: ${mimeType}`);
-  if (!fs3.existsSync(absFilePath)) {
+  if (!fs4.existsSync(absFilePath)) {
     console.error(`[Thumbnail] \u274C Source file does not exist: ${absFilePath}`);
     return null;
   }
@@ -2163,7 +2209,7 @@ async function generateThumbnail(filePath, storedName, mimeType) {
             size: "400x300",
             timestamps: [timestamp]
           }).on("start", (cmd) => console.log(`[Thumbnail] FFmpeg CMD: ${cmd}`)).on("end", () => {
-            if (fs3.existsSync(thumbPath)) {
+            if (fs4.existsSync(thumbPath)) {
               console.log(`[Thumbnail] \u2705 Video thumbnail created at ${timestamp}`);
               resolve(true);
             } else {
@@ -2191,7 +2237,7 @@ async function generateThumbnail(filePath, storedName, mimeType) {
   return null;
 }
 async function getImageDimensions(filePath, mimeType) {
-  const absFilePath = path4.resolve(filePath);
+  const absFilePath = path5.resolve(filePath);
   console.log(`[Dimensions] \u{1F4CF} Getting dimensions for: ${absFilePath} (${mimeType})`);
   try {
     if (mimeType.startsWith("image/")) {
@@ -2227,8 +2273,8 @@ async function getImageDimensions(filePath, mimeType) {
 init_storage();
 
 // src/services/telegramUserClient.ts
-import fs4 from "fs";
-import path5 from "path";
+import fs5 from "fs";
+import path6 from "path";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 var userClient = null;
@@ -2250,11 +2296,11 @@ async function initTelegramUserClient() {
     return;
   }
   userSessionFilePath = getSessionFilePath();
-  const sessionDir = path5.dirname(userSessionFilePath);
-  if (!fs4.existsSync(sessionDir)) {
-    fs4.mkdirSync(sessionDir, { recursive: true, mode: 448 });
+  const sessionDir = path6.dirname(userSessionFilePath);
+  if (!fs5.existsSync(sessionDir)) {
+    fs5.mkdirSync(sessionDir, { recursive: true, mode: 448 });
   }
-  const sessionString = fs4.existsSync(userSessionFilePath) ? fs4.readFileSync(userSessionFilePath, "utf-8").trim() : "";
+  const sessionString = fs5.existsSync(userSessionFilePath) ? fs5.readFileSync(userSessionFilePath, "utf-8").trim() : "";
   if (!sessionString) {
     console.log("\u26A0\uFE0F Telegram \u7528\u6237 session \u4E3A\u7A7A\uFF0C\u5148\u8FD0\u884C\u767B\u5F55\u811A\u672C\u751F\u6210 session \u540E\u518D\u542F\u7528 user client");
     return;
@@ -2274,8 +2320,8 @@ async function initTelegramUserClient() {
     userClient = null;
     return;
   }
-  fs4.writeFileSync(userSessionFilePath, userClient.session.save(), { mode: 384 });
-  fs4.chmodSync(userSessionFilePath, 384);
+  fs5.writeFileSync(userSessionFilePath, userClient.session.save(), { mode: 384 });
+  fs5.chmodSync(userSessionFilePath, 384);
   console.log("\u{1F916} Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5668\u5DF2\u8FDE\u63A5");
 }
 function getTelegramUserClient() {
@@ -2290,10 +2336,10 @@ function getTelegramUserSessionFilePath() {
 
 // src/utils/fileUtils.ts
 init_db();
-import path6 from "path";
+import path7 from "path";
 async function getUniqueStoredName(originalName, folder = null, storageAccountId = null) {
   const sanitizedName = sanitizeFilename(originalName);
-  const ext = path6.extname(sanitizedName);
+  const ext = path7.extname(sanitizedName);
   const baseName = ext ? sanitizedName.slice(0, -ext.length) : sanitizedName;
   let currentName = sanitizedName;
   let counter = 1;
@@ -2321,7 +2367,7 @@ async function getUniqueStoredName(originalName, folder = null, storageAccountId
 }
 
 // src/utils/storagePath.ts
-import path7 from "path";
+import path8 from "path";
 function isEnabled(value, defaultValue) {
   if (value === void 0 || value === "") return defaultValue;
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
@@ -2342,7 +2388,7 @@ function getTypeFolder(mimeType) {
 }
 function getDetailedTypeFolder(mimeType, fileName) {
   const lowerMime = (mimeType || "").toLowerCase();
-  const ext = path7.extname(fileName || "").toLowerCase();
+  const ext = path8.extname(fileName || "").toLowerCase();
   if (lowerMime.includes("epub") || lowerMime.includes("mobi") || [".epub", ".mobi"].includes(ext)) return "ebooks";
   if (lowerMime.includes("pdf") || ext === ".pdf") return "pdfs";
   if (lowerMime.includes("zip") || lowerMime.includes("rar") || lowerMime.includes("7z") || lowerMime.includes("tar") || lowerMime.includes("gzip") || lowerMime.includes("compressed") || [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"].includes(ext)) return "archives";
@@ -2755,7 +2801,7 @@ function getBackgroundFileCount(chatIdStr) {
 `;
   console.log(logLine.trim());
   try {
-    fs5.appendFileSync("tg_silent_debug.log", logLine);
+    fs6.appendFileSync("tg_silent_debug.log", logLine);
   } catch (e) {
   }
   return count;
@@ -2768,7 +2814,7 @@ async function trySilentMode(client2, chatId, message) {
 `;
   console.log(logLine.trim());
   try {
-    fs5.appendFileSync("tg_silent_debug.log", logLine);
+    fs6.appendFileSync("tg_silent_debug.log", logLine);
   } catch (e) {
   }
   if (fileCount > 3 || isSilent) {
@@ -2914,7 +2960,7 @@ async function refreshConsolidatedMessage(client2, chatId, replyTo) {
   const logLine = `[TG][consolidated][${Date.now()}] check chat=${chatIdStr} silent=${alreadySilent} fileCount=${fileCount} replyTo=${!!replyTo}
 `;
   try {
-    fs5.appendFileSync("tg_silent_debug.log", logLine);
+    fs6.appendFileSync("tg_silent_debug.log", logLine);
   } catch (e) {
   }
   if (alreadySilent || fileCount > 3) {
@@ -3019,19 +3065,19 @@ function extractFileInfo(message) {
   return { fileName: sanitizeFilename(fileName), mimeType };
 }
 async function downloadAndSaveFile(client2, message, originalFileName, targetDir, onProgress, signal) {
-  const ext = path8.extname(originalFileName) || "";
+  const ext = path9.extname(originalFileName) || "";
   const tempStoredName = `${crypto4.randomUUID()}${ext}`;
   let saveDir = targetDir || UPLOAD_DIR;
-  if (!fs5.existsSync(saveDir)) {
+  if (!fs6.existsSync(saveDir)) {
     try {
-      fs5.mkdirSync(saveDir, { recursive: true });
+      fs6.mkdirSync(saveDir, { recursive: true });
     } catch (err) {
       console.error(`\u{1F916} \u521B\u5EFA\u4E0B\u8F7D\u76EE\u5F55\u5931\u8D25: ${saveDir}`, err);
       if (saveDir === UPLOAD_DIR) throw err;
       saveDir = UPLOAD_DIR;
     }
   }
-  const filePath = path8.join(saveDir, tempStoredName);
+  const filePath = path9.join(saveDir, tempStoredName);
   const totalSize = getEstimatedFileSize(message);
   let downloadedSize = 0;
   try {
@@ -3040,7 +3086,7 @@ async function downloadAndSaveFile(client2, message, originalFileName, targetDir
     const workers = totalSize > TELEGRAM_DOWNLOAD_PART_SIZE ? Math.min(configuredWorkers, Math.ceil(totalSize / TELEGRAM_DOWNLOAD_PART_SIZE)) : 1;
     console.log(`\u{1F916} Telegram \u4E0B\u8F7D\u53C2\u6570: workers=${workers}, part=${TELEGRAM_DOWNLOAD_PART_SIZE} bytes, size=${totalSize || "unknown"}`);
     if (workers > 1 && totalSize > 0) {
-      const fileHandle = await fs5.promises.open(filePath, "w");
+      const fileHandle = await fs6.promises.open(filePath, "w");
       try {
         await fileHandle.truncate(totalSize);
         await Promise.all(Array.from({ length: workers }, async (_, workerIndex) => {
@@ -3070,7 +3116,7 @@ async function downloadAndSaveFile(client2, message, originalFileName, targetDir
         await fileHandle.close();
       }
     } else {
-      const writeStream = fs5.createWriteStream(filePath);
+      const writeStream = fs6.createWriteStream(filePath);
       for await (const chunk of client2.iterDownload({
         file: message.media,
         requestSize: TELEGRAM_DOWNLOAD_PART_SIZE
@@ -3088,15 +3134,15 @@ async function downloadAndSaveFile(client2, message, originalFileName, targetDir
         writeStream.on("error", reject);
       });
     }
-    const stats = fs5.statSync(filePath);
+    const stats = fs6.statSync(filePath);
     if (totalSize > 0 && stats.size !== totalSize) {
       throw new Error(`\u4E0B\u8F7D\u6587\u4EF6\u5927\u5C0F\u4E0D\u4E00\u81F4: expected=${totalSize}, actual=${stats.size}`);
     }
     return { filePath, actualSize: stats.size, tempStoredName };
   } catch (error) {
     console.error("\u{1F916} \u4E0B\u8F7D\u6587\u4EF6\u5931\u8D25:", error);
-    if (fs5.existsSync(filePath)) {
-      fs5.unlinkSync(filePath);
+    if (fs6.existsSync(filePath)) {
+      fs6.unlinkSync(filePath);
     }
     return null;
   }
@@ -3134,7 +3180,7 @@ async function processFileUpload(client2, file, queue) {
           file.status = "success";
           file.size = actualSize;
           file.fileType = fileType;
-          if (localFilePath && fs5.existsSync(localFilePath)) fs5.unlinkSync(localFilePath);
+          if (localFilePath && fs6.existsSync(localFilePath)) fs6.unlinkSync(localFilePath);
           return true;
         }
       }
@@ -3151,8 +3197,8 @@ async function processFileUpload(client2, file, queue) {
       let sourceRef = provider.name;
       try {
         finalPath = await provider.saveFile(localFilePath, storedName, file.mimeType, storageFolder);
-        if (fs5.existsSync(localFilePath)) {
-          fs5.unlinkSync(localFilePath);
+        if (fs6.existsSync(localFilePath)) {
+          fs6.unlinkSync(localFilePath);
         }
         localFilePath = void 0;
       } catch (err) {
@@ -3170,9 +3216,9 @@ async function processFileUpload(client2, file, queue) {
     } catch (error) {
       console.error("\u{1F916} \u6587\u4EF6\u4E0A\u4F20\u5931\u8D25:", error);
       file.error = error.message;
-      if (localFilePath && fs5.existsSync(localFilePath)) {
+      if (localFilePath && fs6.existsSync(localFilePath)) {
         try {
-          fs5.unlinkSync(localFilePath);
+          fs6.unlinkSync(localFilePath);
           console.log(`\u{1F916} \u4E0A\u4F20\u5C1D\u8BD5\u5931\u8D25\uFF0C\u5DF2\u81EA\u52A8\u6E05\u7406\u672C\u5730\u5783\u573E\u7F13\u5B58: ${localFilePath}`);
         } catch (e) {
           console.error("\u{1F916} \u81EA\u52A8\u6E05\u7406\u5783\u573E\u7F13\u5B58\u5931\u8D25:", e);
@@ -3242,9 +3288,9 @@ async function processBatchUpload(client2, mediaGroupId) {
     queuePending: 0
   });
   const sanitizedFolderName = sanitizeFilename(folderName);
-  const targetDir = path8.join(UPLOAD_DIR, sanitizedFolderName);
-  if (!fs5.existsSync(targetDir)) {
-    fs5.mkdirSync(targetDir, { recursive: true });
+  const targetDir = path9.join(UPLOAD_DIR, sanitizedFolderName);
+  if (!fs6.existsSync(targetDir)) {
+    fs6.mkdirSync(targetDir, { recursive: true });
   }
   queue.folderName = sanitizedFolderName;
   for (const file of queue.files) {
@@ -3282,7 +3328,7 @@ async function processBatchUpload(client2, mediaGroupId) {
   }, 3e3);
   try {
     await Promise.all(queue.files.map((file, index) => {
-      const ext = path8.extname(file.fileName);
+      const ext = path9.extname(file.fileName);
       const baseName = queue.folderName || "file";
       const isDefaultFolder = /^[0-9-]+$/.test(baseName);
       if (!isDefaultFolder) {
@@ -3306,8 +3352,8 @@ async function handleCleanupCallback(cleanupId) {
     return { success: false, message: "\u8BE5\u6E05\u7406\u4EFB\u52A1\u5DF2\u8FC7\u671F\u6216\u4E0D\u5B58\u5728" };
   }
   try {
-    if (cleanupInfo.localPath && fs5.existsSync(cleanupInfo.localPath)) {
-      fs5.unlinkSync(cleanupInfo.localPath);
+    if (cleanupInfo.localPath && fs6.existsSync(cleanupInfo.localPath)) {
+      fs6.unlinkSync(cleanupInfo.localPath);
     }
     pendingCleanups.delete(cleanupId);
     return {
@@ -3385,7 +3431,7 @@ async function handleFileUpload(client2, event) {
     let finalFileName = fileName;
     const caption = message.message || "";
     if (caption && caption.trim()) {
-      const ext = path8.extname(fileName);
+      const ext = path9.extname(fileName);
       const firstLine = caption.split(/\r?\n/)[0].trim();
       const sanitizedCaption = sanitizeFilename(firstLine);
       if (ext && !sanitizedCaption.toLowerCase().endsWith(ext.toLowerCase())) {
@@ -3487,7 +3533,7 @@ async function handleFileUpload(client2, event) {
         if (duplicateMode === "skip") {
           const duplicate = await findDuplicateFile(finalFileName, storageFolder, actualSize, activeAccountId);
           if (duplicate) {
-            if (fs5.existsSync(localFilePath)) fs5.unlinkSync(localFilePath);
+            if (fs6.existsSync(localFilePath)) fs6.unlinkSync(localFilePath);
             lastLocalPath = void 0;
             updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: storageManager.getProvider().name, fileType, folder: storageFolder });
             if (statusMsg && !silentSessionMap.has(chatIdStr)) {
@@ -3526,8 +3572,8 @@ async function handleFileUpload(client2, event) {
         let sourceRef = provider.name;
         try {
           finalPath = await provider.saveFile(localFilePath, storedName, mimeType, storageFolder);
-          if (fs5.existsSync(localFilePath)) {
-            fs5.unlinkSync(localFilePath);
+          if (fs6.existsSync(localFilePath)) {
+            fs6.unlinkSync(localFilePath);
           }
           lastLocalPath = void 0;
           localFilePath = void 0;
@@ -3555,9 +3601,9 @@ async function handleFileUpload(client2, event) {
         return true;
       } catch (error) {
         lastError = error instanceof Error ? error.message : "\u672A\u77E5\u9519\u8BEF";
-        if (localFilePath && fs5.existsSync(localFilePath)) {
+        if (localFilePath && fs6.existsSync(localFilePath)) {
           try {
-            fs5.unlinkSync(localFilePath);
+            fs6.unlinkSync(localFilePath);
           } catch (e) {
           }
         }
@@ -3569,9 +3615,9 @@ async function handleFileUpload(client2, event) {
       let success = await attemptSingleUpload(signal);
       if (!success && !signal.aborted && retryCount < maxRetries) {
         retryCount++;
-        if (lastLocalPath && fs5.existsSync(lastLocalPath)) {
+        if (lastLocalPath && fs6.existsSync(lastLocalPath)) {
           try {
-            fs5.unlinkSync(lastLocalPath);
+            fs6.unlinkSync(lastLocalPath);
           } catch (e) {
           }
         }
@@ -3651,10 +3697,11 @@ init_storage();
 
 // src/services/orphanCleanup.ts
 init_db();
-import fs6 from "fs";
-import path9 from "path";
-var UPLOAD_DIR2 = process.env.UPLOAD_DIR || "./data/uploads";
-var THUMBNAIL_DIR2 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
+init_localPath();
+import fs7 from "fs";
+import path10 from "path";
+var UPLOAD_DIR2 = path10.resolve(process.env.UPLOAD_DIR || "./data/uploads");
+var THUMBNAIL_DIR2 = path10.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 function isAutoCleanupEnabled() {
   return ["1", "true", "yes", "on"].includes((process.env.AUTO_CLEANUP_ORPHANS || "true").toLowerCase());
 }
@@ -3666,15 +3713,15 @@ function formatBytes2(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 function getAllFiles(dirPath, arrayOfFiles = []) {
-  if (!fs6.existsSync(dirPath)) {
+  if (!fs7.existsSync(dirPath)) {
     return arrayOfFiles;
   }
   try {
-    const files = fs6.readdirSync(dirPath);
+    const files = fs7.readdirSync(dirPath);
     for (const file of files) {
-      const fullPath = path9.join(dirPath, file);
+      const fullPath = path10.join(dirPath, file);
       try {
-        const stat = fs6.statSync(fullPath);
+        const stat = fs7.statSync(fullPath);
         if (stat.isDirectory()) {
           getAllFiles(fullPath, arrayOfFiles);
         } else {
@@ -3694,21 +3741,21 @@ function getAllFiles(dirPath, arrayOfFiles = []) {
   return arrayOfFiles;
 }
 function removeEmptyDirectories(dirPath) {
-  if (!fs6.existsSync(dirPath)) return;
+  if (!fs7.existsSync(dirPath)) return;
   try {
-    const files = fs6.readdirSync(dirPath);
+    const files = fs7.readdirSync(dirPath);
     for (const file of files) {
-      const fullPath = path9.join(dirPath, file);
+      const fullPath = path10.join(dirPath, file);
       try {
-        if (fs6.statSync(fullPath).isDirectory()) {
+        if (fs7.statSync(fullPath).isDirectory()) {
           removeEmptyDirectories(fullPath);
         }
       } catch (e) {
       }
     }
-    const remainingFiles = fs6.readdirSync(dirPath);
+    const remainingFiles = fs7.readdirSync(dirPath);
     if (remainingFiles.length === 0 && dirPath !== UPLOAD_DIR2) {
-      fs6.rmdirSync(dirPath);
+      fs7.rmdirSync(dirPath);
       console.log(`\u{1F9F9} \u5220\u9664\u7A7A\u6587\u4EF6\u5939: ${dirPath}`);
     }
   } catch (e) {
@@ -3724,18 +3771,34 @@ async function cleanupOrphanFiles() {
   };
   console.log("\u{1F9F9} \u5F00\u59CB\u626B\u63CF\u5B64\u513F\u6587\u4EF6...");
   try {
-    const dbResult = await query("SELECT stored_name FROM files");
-    const dbFileSet = new Set(dbResult.rows.map((row) => row.stored_name));
+    const dbResult = await query(`
+            SELECT stored_name, folder, path
+            FROM files
+            WHERE source = 'local'
+              AND mime_type IS DISTINCT FROM 'application/x-directory'
+        `);
+    const dbFileSet = /* @__PURE__ */ new Set();
+    for (const row of dbResult.rows) {
+      if (row.path) {
+        const relativePath = getRelativeStoragePath(UPLOAD_DIR2, row.path);
+        if (relativePath) dbFileSet.add(relativePath);
+      }
+      if (row.stored_name) {
+        const key = [row.folder, row.stored_name].filter(Boolean).join("/");
+        if (key) dbFileSet.add(key);
+      }
+    }
     console.log(`\u{1F9F9} \u6570\u636E\u5E93\u4E2D\u5DF2\u6CE8\u518C\u6587\u4EF6\u6570: ${dbFileSet.size}`);
     const diskFiles = getAllFiles(UPLOAD_DIR2);
     console.log(`\u{1F9F9} \u78C1\u76D8\u4E0A\u6587\u4EF6\u6570: ${diskFiles.length}`);
     for (const file of diskFiles) {
-      if (!dbFileSet.has(file.name)) {
+      const relativePath = getRelativeStoragePath(UPLOAD_DIR2, file.path);
+      if (relativePath && !dbFileSet.has(relativePath)) {
         try {
-          fs6.unlinkSync(file.path);
+          await safeUnlink(file.path, UPLOAD_DIR2);
           stats.deletedCount++;
           stats.freedBytes += file.size;
-          stats.deletedFiles.push(file.name);
+          stats.deletedFiles.push(relativePath);
           console.log(`\u{1F9F9} \u5220\u9664\u5B64\u513F\u6587\u4EF6: ${file.path} (${formatBytes2(file.size)})`);
         } catch (e) {
           console.error(`\u{1F9F9} \u5220\u9664\u6587\u4EF6\u5931\u8D25: ${file.path}`, e);
@@ -3786,9 +3849,12 @@ function stopPeriodicCleanup() {
 }
 
 // src/services/telegramCommands.ts
+init_localPath();
 var checkDiskSpace = checkDiskSpaceModule.default || checkDiskSpaceModule;
 var DOWNLOAD_WORKER_OPTIONS = [4, 8, 12, 16];
 var ON_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
+var UPLOAD_DIR3 = process.env.UPLOAD_DIR || "./data/uploads";
+var THUMBNAIL_DIR3 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 function normalizeDownloadWorkers(value) {
   const parsed = parseInt(String(value ?? "4"), 10);
   return DOWNLOAD_WORKER_OPTIONS.includes(parsed) ? parsed : 4;
@@ -4047,11 +4113,11 @@ async function handleDelete(message, args) {
       } catch (err) {
         console.warn(`\u{1F916} ${file.source} \u6587\u4EF6\u7269\u7406\u5220\u9664\u5931\u8D25\u6216\u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728:`, err);
       }
-    } else if (file.path && fs7.existsSync(file.path)) {
-      fs7.unlinkSync(file.path);
+    } else if (file.path) {
+      await safeUnlink(file.path, UPLOAD_DIR3);
     }
-    if (file.thumbnail_path && fs7.existsSync(file.thumbnail_path)) {
-      fs7.unlinkSync(file.thumbnail_path);
+    if (file.thumbnail_path) {
+      await safeUnlink(file.thumbnail_path, THUMBNAIL_DIR3);
     }
     await query(`DELETE FROM files WHERE id = $1`, [file.id]);
     await message.reply({ message: buildDeleteSuccess(file.name, file.id) });
@@ -4284,7 +4350,7 @@ async function handleDownloadWorkersCallback(client2, update, data) {
 init_db();
 init_storage();
 import fs8 from "fs";
-import path10 from "path";
+import path11 from "path";
 import { spawn } from "child_process";
 import os2 from "os";
 var YtDlpQueue = class {
@@ -4329,7 +4395,7 @@ function selectPrimaryOutputFile(taskDir) {
   const entries = fs8.readdirSync(taskDir, { withFileTypes: true });
   const files = entries.filter((e) => e.isFile()).map((e) => ({
     name: e.name,
-    fullPath: path10.join(taskDir, e.name)
+    fullPath: path11.join(taskDir, e.name)
   })).filter((f) => !f.name.endsWith(".part") && !f.name.endsWith(".ytdl") && !f.name.endsWith(".json") && !f.name.endsWith(".tmp")).map((f) => ({
     ...f,
     size: fs8.existsSync(f.fullPath) ? fs8.statSync(f.fullPath).size : 0
@@ -4339,7 +4405,7 @@ function selectPrimaryOutputFile(taskDir) {
 }
 async function runYtDlpDownload(url, taskDir) {
   ensureDir(taskDir);
-  const outputTemplate = path10.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
+  const outputTemplate = path11.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
   const args = [
     "--no-playlist",
     "--newline",
@@ -4380,7 +4446,7 @@ async function uploadDownloadedFile(localFilePath, originalFileName) {
   const provider = storageManager.getProvider();
   const activeAccountId = storageManager.getActiveAccountId();
   const safeName = sanitizeFilename(originalFileName);
-  const ext = path10.extname(safeName) || path10.extname(localFilePath) || "";
+  const ext = path11.extname(safeName) || path11.extname(localFilePath) || "";
   const mimeType = getMimeTypeFromFilename(safeName);
   const fileType = getFileType(mimeType);
   const storageRules = await getStoragePathRules();
@@ -4420,9 +4486,9 @@ async function handleYtDlpCommand(message, url) {
     status: "pending",
     createdAt: Date.now()
   };
-  const workBaseDir = path10.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path10.join(process.cwd(), YTDLP_WORK_DIR);
+  const workBaseDir = path11.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path11.join(process.cwd(), YTDLP_WORK_DIR);
   ensureDir(workBaseDir);
-  const taskDir = path10.join(workBaseDir, task.id);
+  const taskDir = path11.join(workBaseDir, task.id);
   await message.reply({ message: `\u23EC \u5F00\u59CB\u89E3\u6790\u5E76\u4E0B\u8F7D...
 Task: ${task.id}` });
   ytDlpQueue.add(async () => {
@@ -4634,7 +4700,7 @@ async function initTelegramBot() {
     console.error("\u{1F916} Telegram Bot \u540C\u6B65\u5B58\u50A8\u914D\u7F6E\u5931\u8D25:", e);
   }
   try {
-    const sessionDir = path11.dirname(SESSION_FILE);
+    const sessionDir = path12.dirname(SESSION_FILE);
     if (!fs9.existsSync(sessionDir)) {
       fs9.mkdirSync(sessionDir, { recursive: true });
     }
@@ -4754,7 +4820,7 @@ async function initTelegramBot() {
             const qrDataUrl = await generateOTPAuthUrl();
             const base64Data = qrDataUrl.replace(/^data:image\/png;base64,/, "");
             const buffer = Buffer.from(base64Data, "base64");
-            const tempPath = path11.join(process.cwd(), `temp_qr_${chatId}.png`);
+            const tempPath = path12.join(process.cwd(), `temp_qr_${chatId}.png`);
             fs9.writeFileSync(tempPath, buffer);
             const qrMessage = await client.sendFile(chatId, {
               file: tempPath,
@@ -5227,9 +5293,10 @@ function requireAuthOrSignedUrl(req, res, next) {
 }
 
 // src/routes/files.ts
+init_localPath();
 var router2 = Router2();
-var UPLOAD_DIR3 = path12.resolve(process.env.UPLOAD_DIR || "./data/uploads");
-var THUMBNAIL_DIR3 = path12.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
+var UPLOAD_DIR4 = path13.resolve(process.env.UPLOAD_DIR || "./data/uploads");
+var THUMBNAIL_DIR4 = path13.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 router2.get("/", async (_req, res) => {
   try {
     const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
@@ -5407,7 +5474,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
         return res.status(500).json({ error: "\u83B7\u53D6\u9884\u89C8\u5931\u8D25" });
       }
     }
-    const filePath = file.path || path12.join(UPLOAD_DIR3, file.stored_name);
+    const filePath = file.path || path13.join(UPLOAD_DIR4, file.stored_name);
     if (!fs10.existsSync(filePath)) {
       return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728\u4E8E\u670D\u52A1\u5668" });
     }
@@ -5501,7 +5568,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/download", async (req, res) => {
         return res.status(500).json({ error: "\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6" });
       }
     }
-    const filePath = file.path || path12.join(UPLOAD_DIR3, file.stored_name);
+    const filePath = file.path || path13.join(UPLOAD_DIR4, file.stored_name);
     console.log(`[Download] Serving local file: ${filePath}`);
     if (!fs10.existsSync(filePath)) {
       console.log(`[Download] File system path not found: ${filePath}`);
@@ -5528,7 +5595,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/thumbnail", async (req, res) => {
     if (!file.thumbnail_path) {
       return res.status(404).json({ error: "\u65E0\u7F29\u7565\u56FE" });
     }
-    const thumbPath = path12.join(THUMBNAIL_DIR3, path12.basename(file.thumbnail_path));
+    const thumbPath = path13.join(THUMBNAIL_DIR4, path13.basename(file.thumbnail_path));
     if (!fs10.existsSync(thumbPath)) {
       return res.status(404).json({ error: "\u7F29\u7565\u56FE\u6587\u4EF6\u4E0D\u5B58\u5728" });
     }
@@ -5560,16 +5627,12 @@ router2.delete("/:id([0-9a-fA-F-]{36})", async (req, res) => {
         console.error(`${file.source} \u6587\u4EF6\u5220\u9664\u5931\u8D25 (\u53EF\u80FD\u5DF2\u4E0D\u5B58\u5728):`, err);
       }
     } else {
-      const filePath = file.path || path12.join(UPLOAD_DIR3, file.stored_name);
-      if (fs10.existsSync(filePath)) {
-        fs10.unlinkSync(filePath);
-      }
+      const filePath = file.path || path13.join(UPLOAD_DIR4, file.stored_name);
+      await safeUnlink(filePath, UPLOAD_DIR4);
     }
     if (file.thumbnail_path) {
-      const thumbPath = path12.join(THUMBNAIL_DIR3, path12.basename(file.thumbnail_path));
-      if (fs10.existsSync(thumbPath)) {
-        fs10.unlinkSync(thumbPath);
-      }
+      const thumbPath = path13.join(THUMBNAIL_DIR4, path13.basename(file.thumbnail_path));
+      await safeUnlink(thumbPath, THUMBNAIL_DIR4);
     }
     await query("DELETE FROM files WHERE id = $1", [id]);
     res.json({ success: true, message: "\u6587\u4EF6\u5DF2\u5220\u9664" });
@@ -5607,16 +5670,12 @@ router2.post("/batch-delete", async (req, res) => {
           const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
           await provider.deleteFile(file.path);
         } else {
-          const filePath = file.path || path12.join(UPLOAD_DIR3, file.stored_name);
-          if (fs10.existsSync(filePath)) {
-            fs10.unlinkSync(filePath);
-          }
+          const filePath = file.path || path13.join(UPLOAD_DIR4, file.stored_name);
+          await safeUnlink(filePath, UPLOAD_DIR4);
         }
         if (file.thumbnail_path) {
-          const thumbPath = path12.join(THUMBNAIL_DIR3, path12.basename(file.thumbnail_path));
-          if (fs10.existsSync(thumbPath)) {
-            fs10.unlinkSync(thumbPath);
-          }
+          const thumbPath = path13.join(THUMBNAIL_DIR4, path13.basename(file.thumbnail_path));
+          await safeUnlink(thumbPath, THUMBNAIL_DIR4);
         }
       } catch (err) {
         console.error(`\u5220\u9664\u7269\u7406\u6587\u4EF6\u5931\u8D25 (ID: ${file.id}):`, err);
@@ -5838,7 +5897,7 @@ init_db();
 import { Router as Router3 } from "express";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
-import path13 from "path";
+import path14 from "path";
 import fs11 from "fs";
 
 // src/middleware/apiKey.ts
@@ -5896,7 +5955,7 @@ function decodeFilename(filename) {
   }
   return filename;
 }
-var TEMP_DIR = path13.join(process.cwd(), "data", "temp");
+var TEMP_DIR = path14.join(process.cwd(), "data", "temp");
 if (!fs11.existsSync(TEMP_DIR)) {
   fs11.mkdirSync(TEMP_DIR, { recursive: true });
 }
@@ -5905,7 +5964,7 @@ var storage = multer.diskStorage({
     cb(null, TEMP_DIR);
   },
   filename: (_req, file, cb) => {
-    const ext = path13.extname(file.originalname);
+    const ext = path14.extname(file.originalname);
     const storedName = `${uuidv4()}${ext}`;
     cb(null, storedName);
   }
@@ -5926,7 +5985,7 @@ var handleUpload = async (req, res, source = "web") => {
   const originalName = decodeFilename(file.originalname);
   const mimeType = file.mimetype;
   const size = file.size;
-  const tempPath = path13.resolve(file.path);
+  const tempPath = path14.resolve(file.path);
   const activeAccountId = storageManager.getActiveAccountId();
   const storageRules = await getStoragePathRules();
   const storageFolder = buildStorageFolderWithRules({ source, folder: folder || null, mimeType, fileName: originalName }, storageRules);
@@ -5962,7 +6021,7 @@ var handleUpload = async (req, res, source = "web") => {
       try {
         const thumbResult = await generateThumbnail(tempPath, storedName, mimeType);
         if (thumbResult) {
-          thumbnailPath = path13.basename(thumbResult);
+          thumbnailPath = path14.basename(thumbResult);
           console.log(`[Upload] \u2728 Thumbnail generated: ${thumbnailPath}`);
           const dims = await getImageDimensions(tempPath, mimeType);
           width = dims.width;
@@ -6033,12 +6092,12 @@ init_db();
 import { Router as Router4 } from "express";
 import checkDiskSpaceModule2 from "check-disk-space";
 import os3 from "os";
-import path14 from "path";
+import path15 from "path";
 import fs12 from "fs";
 import axios3 from "axios";
 var checkDiskSpace2 = checkDiskSpaceModule2.default || checkDiskSpaceModule2;
 var router4 = Router4();
-var UPLOAD_DIR4 = process.env.UPLOAD_DIR || "./data/uploads";
+var UPLOAD_DIR5 = process.env.UPLOAD_DIR || "./data/uploads";
 function getOneDriveRedirectUri(req) {
   const apiBase = process.env.VITE_API_URL;
   if (apiBase) {
@@ -6059,7 +6118,7 @@ function getGoogleDriveRedirectUri(req) {
 }
 router4.get("/stats", requireAuth, async (_req, res) => {
   try {
-    const diskPath = os3.platform() === "win32" ? "C:" : path14.resolve(UPLOAD_DIR4);
+    const diskPath = os3.platform() === "win32" ? "C:" : path15.resolve(UPLOAD_DIR5);
     const diskSpace = await checkDiskSpace2(diskPath);
     const result = await query(`
             SELECT 
@@ -6452,14 +6511,14 @@ var storage_default = router4;
 init_db();
 import { Router as Router5 } from "express";
 import { v4 as uuidv42 } from "uuid";
-import path15 from "path";
+import path16 from "path";
 import fs13 from "fs";
 init_storage();
 var router5 = Router5();
-var UPLOAD_DIR5 = process.env.UPLOAD_DIR || "./data/uploads";
-var THUMBNAIL_DIR4 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
+var UPLOAD_DIR6 = process.env.UPLOAD_DIR || "./data/uploads";
+var THUMBNAIL_DIR5 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var CHUNK_DIR = process.env.CHUNK_DIR || "./data/chunks";
-[UPLOAD_DIR5, THUMBNAIL_DIR4, CHUNK_DIR].forEach((dir) => {
+[UPLOAD_DIR6, THUMBNAIL_DIR5, CHUNK_DIR].forEach((dir) => {
   if (!fs13.existsSync(dir)) {
     fs13.mkdirSync(dir, { recursive: true });
   }
@@ -6469,7 +6528,7 @@ setInterval(() => {
   const now = /* @__PURE__ */ new Date();
   uploadSessions.forEach((session, uploadId) => {
     if (now.getTime() - session.createdAt.getTime() > 24 * 60 * 60 * 1e3) {
-      const chunkDir = path15.join(CHUNK_DIR, uploadId);
+      const chunkDir = path16.join(CHUNK_DIR, uploadId);
       if (fs13.existsSync(chunkDir)) {
         fs13.rmSync(chunkDir, { recursive: true });
       }
@@ -6502,7 +6561,7 @@ router5.post("/init", (req, res) => {
       return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570" });
     }
     const uploadId = uuidv42();
-    const chunkDir = path15.join(CHUNK_DIR, uploadId);
+    const chunkDir = path16.join(CHUNK_DIR, uploadId);
     fs13.mkdirSync(chunkDir, { recursive: true });
     uploadSessions.set(uploadId, {
       uploadId,
@@ -6537,7 +6596,7 @@ router5.post("/chunk", async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728\u6216\u5DF2\u8FC7\u671F" });
     }
-    const chunkPath = path15.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
+    const chunkPath = path16.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
     const writeStream = fs13.createWriteStream(chunkPath);
     await new Promise((resolve, reject) => {
       req.pipe(writeStream);
@@ -6579,13 +6638,20 @@ router5.post("/complete", async (req, res) => {
       });
     }
     const activeAccountId = storageManager.getActiveAccountId();
-    const storedName = await getUniqueStoredName(session.filename, session.folder || null, activeAccountId);
-    const finalPath = path15.resolve(path15.join(UPLOAD_DIR5, storedName));
-    const writeStream = fs13.createWriteStream(finalPath);
+    const storageRules = await getStoragePathRules();
+    const storageFolder = buildStorageFolderWithRules({
+      source: "web",
+      folder: session.folder || null,
+      mimeType: session.mimeType,
+      fileName: session.filename
+    }, storageRules);
+    const storedName = await getUniqueStoredName(session.filename, storageFolder, activeAccountId);
+    const tempMergedPath = path16.resolve(path16.join(UPLOAD_DIR6, `${uploadId}-${storedName}`));
+    const writeStream = fs13.createWriteStream(tempMergedPath);
     console.log(`[ChunkedComplete] \u{1F9E9} Merging ${session.totalChunks} chunks for: ${session.filename}`);
-    console.log(`[ChunkedComplete] \u{1F3E0} Final temp path: ${finalPath}`);
+    console.log(`[ChunkedComplete] \u{1F3E0} Final temp path: ${tempMergedPath}`);
     for (let i = 0; i < session.totalChunks; i++) {
-      const chunkPath = path15.join(CHUNK_DIR, uploadId, `chunk_${i}`);
+      const chunkPath = path16.join(CHUNK_DIR, uploadId, `chunk_${i}`);
       const chunkData = fs13.readFileSync(chunkPath);
       writeStream.write(chunkData);
     }
@@ -6594,20 +6660,39 @@ router5.post("/complete", async (req, res) => {
       writeStream.on("finish", resolve);
       writeStream.on("error", reject);
     });
-    const chunkDir = path15.join(CHUNK_DIR, uploadId);
+    const chunkDir = path16.join(CHUNK_DIR, uploadId);
     fs13.rmSync(chunkDir, { recursive: true });
     uploadSessions.delete(uploadId);
+    const duplicateMode = await getDuplicateMode();
+    if (duplicateMode === "skip") {
+      const duplicate = await findDuplicateFile(session.filename, storageFolder, session.totalSize, activeAccountId);
+      if (duplicate) {
+        if (fs13.existsSync(tempMergedPath)) fs13.unlinkSync(tempMergedPath);
+        return res.json({
+          success: true,
+          skipped: true,
+          reason: "duplicate",
+          file: {
+            id: duplicate.id,
+            name: duplicate.name,
+            size: duplicate.size,
+            folder: duplicate.folder,
+            date: duplicate.created_at
+          }
+        });
+      }
+    }
     let thumbnailPath = null;
     let width = null;
     let height = null;
     if (session.mimeType.startsWith("image/") || session.mimeType.startsWith("video/")) {
       try {
         console.log(`[ChunkedComplete] \u{1F5BC}\uFE0F  MIME: ${session.mimeType}, starting generation...`);
-        const thumbResult = await generateThumbnail(finalPath, storedName, session.mimeType);
+        const thumbResult = await generateThumbnail(tempMergedPath, storedName, session.mimeType);
         if (thumbResult) {
-          thumbnailPath = path15.basename(thumbResult);
+          thumbnailPath = path16.basename(thumbResult);
           console.log(`[ChunkedComplete] \u2728 Thumbnail generated: ${thumbnailPath}`);
-          const dims = await getImageDimensions(finalPath, session.mimeType);
+          const dims = await getImageDimensions(tempMergedPath, session.mimeType);
           width = dims.width;
           height = dims.height;
         } else {
@@ -6621,14 +6706,14 @@ router5.post("/complete", async (req, res) => {
     const provider = storageManager.getProvider();
     console.log(`[ChunkedComplete] \u{1F6E0}\uFE0F  Provider: ${provider.name}, accountId: ${activeAccountId || "none (local)"}`);
     try {
-      storedPath = await provider.saveFile(finalPath, storedName, session.mimeType);
+      storedPath = await provider.saveFile(tempMergedPath, storedName, session.mimeType, storageFolder);
     } catch (err) {
-      if (fs13.existsSync(finalPath)) fs13.unlinkSync(finalPath);
+      if (fs13.existsSync(tempMergedPath)) fs13.unlinkSync(tempMergedPath);
       throw err;
     }
-    if (fs13.existsSync(finalPath)) {
+    if (fs13.existsSync(tempMergedPath)) {
       try {
-        fs13.unlinkSync(finalPath);
+        fs13.unlinkSync(tempMergedPath);
       } catch (e) {
       }
     }
@@ -6638,7 +6723,7 @@ router5.post("/complete", async (req, res) => {
             (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id) 
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
             RETURNING id, created_at, name, type, size`,
-      [session.filename, storedName, type, session.mimeType, session.totalSize, storedPath, thumbnailPath, width, height, provider.name, session.folder || null, activeAccountId]
+      [session.filename, storedName, type, session.mimeType, session.totalSize, storedPath, thumbnailPath, width, height, provider.name, storageFolder, activeAccountId]
     );
     const newFile = result.rows[0];
     res.json({
@@ -6664,7 +6749,7 @@ router5.delete("/:uploadId", (req, res) => {
     const uploadId = req.params.uploadId;
     const session = uploadSessions.get(uploadId);
     if (session) {
-      const chunkDir = path15.join(CHUNK_DIR, uploadId);
+      const chunkDir = path16.join(CHUNK_DIR, uploadId);
       if (fs13.existsSync(chunkDir)) {
         fs13.rmSync(chunkDir, { recursive: true });
       }
@@ -6703,16 +6788,16 @@ dotenv3.config();
 var app = express();
 app.set("trust proxy", 1);
 var PORT = process.env.PORT || 51947;
-var UPLOAD_DIR6 = process.env.UPLOAD_DIR || "./data/uploads";
-var THUMBNAIL_DIR5 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
+var UPLOAD_DIR7 = process.env.UPLOAD_DIR || "./data/uploads";
+var THUMBNAIL_DIR6 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
-if (!fs14.existsSync(UPLOAD_DIR6)) {
-  fs14.mkdirSync(UPLOAD_DIR6, { recursive: true });
-  console.log(`\u{1F4C1} \u521B\u5EFA\u4E0A\u4F20\u76EE\u5F55: ${UPLOAD_DIR6}`);
+if (!fs14.existsSync(UPLOAD_DIR7)) {
+  fs14.mkdirSync(UPLOAD_DIR7, { recursive: true });
+  console.log(`\u{1F4C1} \u521B\u5EFA\u4E0A\u4F20\u76EE\u5F55: ${UPLOAD_DIR7}`);
 }
-if (!fs14.existsSync(THUMBNAIL_DIR5)) {
-  fs14.mkdirSync(THUMBNAIL_DIR5, { recursive: true });
-  console.log(`\u{1F4C1} \u521B\u5EFA\u7F29\u7565\u56FE\u76EE\u5F55: ${THUMBNAIL_DIR5}`);
+if (!fs14.existsSync(THUMBNAIL_DIR6)) {
+  fs14.mkdirSync(THUMBNAIL_DIR6, { recursive: true });
+  console.log(`\u{1F4C1} \u521B\u5EFA\u7F29\u7565\u56FE\u76EE\u5F55: ${THUMBNAIL_DIR6}`);
 }
 if (!fs14.existsSync(CHUNK_DIR2)) {
   fs14.mkdirSync(CHUNK_DIR2, { recursive: true });
@@ -6739,11 +6824,11 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use("/api/auth", auth_default);
-app.use("/uploads", requireAuth, express.static(UPLOAD_DIR6, {
+app.use("/uploads", requireAuth, express.static(UPLOAD_DIR7, {
   maxAge: "1d",
   etag: true
 }));
-app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR5, {
+app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR6, {
   maxAge: "7d",
   etag: true
 }));
@@ -6775,8 +6860,8 @@ app.listen(PORT, async () => {
   console.log(`
 \u{1F680} FlClouds \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
-\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path16.resolve(UPLOAD_DIR6)}
-\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path16.resolve(THUMBNAIL_DIR5)}
+\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path17.resolve(UPLOAD_DIR7)}
+\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path17.resolve(THUMBNAIL_DIR6)}
 \u{1F510} \u5BC6\u7801\u4FDD\u62A4: ${passwordProtected ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
 \u{1F916} Telegram Bot: ${telegramEnabled ? "\u5DF2\u542F\u7528 (\u652F\u63012GB\u6587\u4EF6)" : "\u672A\u542F\u7528"}
 \u{1F464} Telegram User Download: ${isTelegramUserClientReady() ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}

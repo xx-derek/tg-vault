@@ -7,6 +7,7 @@ import { getSignedUrl as getS3SignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createClient, WebDAVClient } from 'webdav';
 import { google } from 'googleapis';
 import { query } from '../db/index.js';
+import { safeJoin } from '../utils/localPath.js';
 
 // 接口定义
 export interface IStorageProvider {
@@ -60,18 +61,18 @@ export class LocalStorageProvider implements IStorageProvider {
     private uploadDir: string;
 
     constructor(uploadDir: string = process.env.UPLOAD_DIR || './data/uploads') {
-        this.uploadDir = uploadDir;
+        this.uploadDir = path.resolve(uploadDir);
         if (!fs.existsSync(this.uploadDir)) {
             fs.mkdirSync(this.uploadDir, { recursive: true });
         }
     }
 
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
-        const destDir = folder ? path.join(this.uploadDir, folder) : this.uploadDir;
+        const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
         if (!fs.existsSync(destDir)) {
             fs.mkdirSync(destDir, { recursive: true });
         }
-        const destPath = path.join(destDir, fileName);
+        const destPath = safeJoin(destDir, fileName);
         try {
             await fs.promises.rename(tempPath, destPath);
         } catch (error: any) {
@@ -87,10 +88,14 @@ export class LocalStorageProvider implements IStorageProvider {
     }
 
     async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
-        if (!fs.existsSync(storedPath)) {
-            throw new Error(`File not found: ${storedPath}`);
+        const safePath = safeJoin(this.uploadDir, path.relative(this.uploadDir, storedPath));
+        if (safePath !== path.resolve(storedPath)) {
+            throw new Error('Unsafe local file path');
         }
-        return fs.createReadStream(storedPath);
+        if (!fs.existsSync(safePath)) {
+            throw new Error(`File not found: ${safePath}`);
+        }
+        return fs.createReadStream(safePath);
     }
 
     async getPreviewUrl(storedPath: string): Promise<string> {
@@ -102,8 +107,12 @@ export class LocalStorageProvider implements IStorageProvider {
     }
 
     async deleteFile(storedPath: string): Promise<void> {
-        if (fs.existsSync(storedPath)) {
-            await fs.promises.unlink(storedPath);
+        const safePath = safeJoin(this.uploadDir, path.relative(this.uploadDir, storedPath));
+        if (safePath !== path.resolve(storedPath)) {
+            throw new Error('Unsafe local file path');
+        }
+        if (fs.existsSync(safePath)) {
+            await fs.promises.unlink(safePath);
         }
     }
 

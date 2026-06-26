@@ -19,11 +19,14 @@ import { storageManager } from './storage.js';
 import { getSetting, setSetting } from '../utils/settings.js';
 import { DuplicateMode, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { startPeriodicCleanup, stopPeriodicCleanup } from './orphanCleanup.js';
+import { safeUnlink } from '../utils/localPath.js';
 
 // ESM compatibility
 const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceModule;
 const DOWNLOAD_WORKER_OPTIONS = [4, 8, 12, 16];
 const ON_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
+const THUMBNAIL_DIR = process.env.THUMBNAIL_DIR || './data/thumbnails';
 
 function normalizeDownloadWorkers(value: unknown): number {
     const parsed = parseInt(String(value ?? '4'), 10);
@@ -315,13 +318,13 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
             } catch (err) {
                 console.warn(`🤖 ${file.source} 文件物理删除失败或文件已不存在:`, err);
             }
-        } else if (file.path && fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
+        } else if (file.path) {
+            await safeUnlink(file.path, UPLOAD_DIR);
         }
 
         // 删除缩略图
-        if (file.thumbnail_path && fs.existsSync(file.thumbnail_path)) {
-            fs.unlinkSync(file.thumbnail_path);
+        if (file.thumbnail_path) {
+            await safeUnlink(file.thumbnail_path, THUMBNAIL_DIR);
         }
 
         // 从数据库删除记录

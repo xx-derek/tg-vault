@@ -8,9 +8,10 @@
 import fs from 'fs';
 import path from 'path';
 import { query } from '../db/index.js';
+import { getRelativeStoragePath, safeUnlink } from '../utils/localPath.js';
 
-const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
-const THUMBNAIL_DIR = process.env.THUMBNAIL_DIR || './data/thumbnails';
+const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
+const THUMBNAIL_DIR = path.resolve(process.env.THUMBNAIL_DIR || './data/thumbnails');
 
 export function isAutoCleanupEnabled(): boolean {
     return ['1', 'true', 'yes', 'on'].includes((process.env.AUTO_CLEANUP_ORPHANS || 'true').toLowerCase());
@@ -109,9 +110,25 @@ export async function cleanupOrphanFiles(): Promise<CleanupStats> {
     console.log('🧹 开始扫描孤儿文件...');
 
     try {
-        // 1. 从数据库获取所有已注册的 stored_name
-        const dbResult = await query('SELECT stored_name FROM files');
-        const dbFileSet = new Set<string>(dbResult.rows.map((row: any) => row.stored_name));
+        // 1. 从数据库获取所有本地已注册文件的相对存储路径
+        const dbResult = await query(`
+            SELECT stored_name, folder, path
+            FROM files
+            WHERE source = 'local'
+              AND mime_type IS DISTINCT FROM 'application/x-directory'
+        `);
+        const dbFileSet = new Set<string>();
+        for (const row of dbResult.rows) {
+            if (row.path) {
+                const relativePath = getRelativeStoragePath(UPLOAD_DIR, row.path);
+                if (relativePath) dbFileSet.add(relativePath);
+            }
+
+            if (row.stored_name) {
+                const key = [row.folder, row.stored_name].filter(Boolean).join('/');
+                if (key) dbFileSet.add(key);
+            }
+        }
 
         console.log(`🧹 数据库中已注册文件数: ${dbFileSet.size}`);
 
@@ -121,13 +138,13 @@ export async function cleanupOrphanFiles(): Promise<CleanupStats> {
 
         // 3. 找出孤儿文件并删除
         for (const file of diskFiles) {
-            // 检查文件名是否在数据库中
-            if (!dbFileSet.has(file.name)) {
+            const relativePath = getRelativeStoragePath(UPLOAD_DIR, file.path);
+            if (relativePath && !dbFileSet.has(relativePath)) {
                 try {
-                    fs.unlinkSync(file.path);
+                    await safeUnlink(file.path, UPLOAD_DIR);
                     stats.deletedCount++;
                     stats.freedBytes += file.size;
-                    stats.deletedFiles.push(file.name);
+                    stats.deletedFiles.push(relativePath);
                     console.log(`🧹 删除孤儿文件: ${file.path} (${formatBytes(file.size)})`);
                 } catch (e) {
                     console.error(`🧹 删除文件失败: ${file.path}`, e);

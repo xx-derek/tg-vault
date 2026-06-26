@@ -7,6 +7,8 @@ import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
 import { storageManager } from '../services/storage.js';
 import { getSignedUrl } from '../middleware/signedUrl.js';
 import { getUniqueStoredName } from '../utils/fileUtils.js';
+import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
+import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
 
 const router = Router();
 
@@ -195,15 +197,20 @@ router.post('/complete', async (req: Request, res: Response) => {
             });
         }
 
-        // 合并分块
-        // 生成唯一的存储文件名
         const activeAccountId = storageManager.getActiveAccountId();
-        const storedName = await getUniqueStoredName(session.filename, session.folder || null, activeAccountId);
-        const finalPath = path.resolve(path.join(UPLOAD_DIR, storedName));
-        const writeStream = fs.createWriteStream(finalPath);
+        const storageRules = await getStoragePathRules();
+        const storageFolder = buildStorageFolderWithRules({
+            source: 'web',
+            folder: session.folder || null,
+            mimeType: session.mimeType,
+            fileName: session.filename,
+        }, storageRules);
+        const storedName = await getUniqueStoredName(session.filename, storageFolder, activeAccountId);
+        const tempMergedPath = path.resolve(path.join(UPLOAD_DIR, `${uploadId}-${storedName}`));
+        const writeStream = fs.createWriteStream(tempMergedPath);
 
         console.log(`[ChunkedComplete] 🧩 Merging ${session.totalChunks} chunks for: ${session.filename}`);
-        console.log(`[ChunkedComplete] 🏠 Final temp path: ${finalPath}`);
+        console.log(`[ChunkedComplete] 🏠 Final temp path: ${tempMergedPath}`);
 
         for (let i = 0; i < session.totalChunks; i++) {
             const chunkPath = path.join(CHUNK_DIR, uploadId, `chunk_${i}`);
@@ -222,6 +229,26 @@ router.post('/complete', async (req: Request, res: Response) => {
         fs.rmSync(chunkDir, { recursive: true });
         uploadSessions.delete(uploadId);
 
+        const duplicateMode = await getDuplicateMode();
+        if (duplicateMode === 'skip') {
+            const duplicate = await findDuplicateFile(session.filename, storageFolder, session.totalSize, activeAccountId);
+            if (duplicate) {
+                if (fs.existsSync(tempMergedPath)) fs.unlinkSync(tempMergedPath);
+                return res.json({
+                    success: true,
+                    skipped: true,
+                    reason: 'duplicate',
+                    file: {
+                        id: duplicate.id,
+                        name: duplicate.name,
+                        size: duplicate.size,
+                        folder: duplicate.folder,
+                        date: duplicate.created_at,
+                    }
+                });
+            }
+        }
+
         // 5. 在保存到永久存储前生成缩略图和获取尺寸
         let thumbnailPath = null;
         let width = null;
@@ -230,11 +257,11 @@ router.post('/complete', async (req: Request, res: Response) => {
         if (session.mimeType.startsWith('image/') || session.mimeType.startsWith('video/')) {
             try {
                 console.log(`[ChunkedComplete] 🖼️  MIME: ${session.mimeType}, starting generation...`);
-                const thumbResult = await generateThumbnail(finalPath, storedName, session.mimeType);
+                const thumbResult = await generateThumbnail(tempMergedPath, storedName, session.mimeType);
                 if (thumbResult) {
                     thumbnailPath = path.basename(thumbResult);
                     console.log(`[ChunkedComplete] ✨ Thumbnail generated: ${thumbnailPath}`);
-                    const dims = await getImageDimensions(finalPath, session.mimeType);
+                    const dims = await getImageDimensions(tempMergedPath, session.mimeType);
                     width = dims.width;
                     height = dims.height;
                 } else {
@@ -250,16 +277,16 @@ router.post('/complete', async (req: Request, res: Response) => {
         const provider = storageManager.getProvider();
         console.log(`[ChunkedComplete] 🛠️  Provider: ${provider.name}, accountId: ${activeAccountId || 'none (local)'}`);
         try {
-            storedPath = await provider.saveFile(finalPath, storedName, session.mimeType);
+            storedPath = await provider.saveFile(tempMergedPath, storedName, session.mimeType, storageFolder);
         } catch (err) {
-            if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+            if (fs.existsSync(tempMergedPath)) fs.unlinkSync(tempMergedPath);
             throw err;
         }
 
         // 清理合并后的临时文件
-        if (fs.existsSync(finalPath)) {
+        if (fs.existsSync(tempMergedPath)) {
             try {
-                fs.unlinkSync(finalPath);
+                fs.unlinkSync(tempMergedPath);
             } catch (e) {
                 // Ignore
             }
@@ -275,7 +302,7 @@ router.post('/complete', async (req: Request, res: Response) => {
             (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id) 
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
             RETURNING id, created_at, name, type, size`,
-            [session.filename, storedName, type, session.mimeType, session.totalSize, storedPath, thumbnailPath, width, height, provider.name, session.folder || null, activeAccountId]
+            [session.filename, storedName, type, session.mimeType, session.totalSize, storedPath, thumbnailPath, width, height, provider.name, storageFolder, activeAccountId]
         );
 
         const newFile = result.rows[0];

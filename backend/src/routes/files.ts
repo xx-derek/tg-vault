@@ -3,6 +3,7 @@ import { query } from '../db/index.js';
 import fs from 'fs';
 import path from 'path';
 import { generateSignature, getSignedUrl } from '../middleware/signedUrl.js';
+import { safeUnlink } from '../utils/localPath.js';
 
 const router = Router();
 
@@ -429,17 +430,13 @@ router.delete('/:id([0-9a-fA-F-]{36})', async (req: Request, res: Response) => {
         } else {
             // 删除实际文件（使用数据库中存储的完整路径）
             const filePath = file.path || path.join(UPLOAD_DIR, file.stored_name);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-            }
+            await safeUnlink(filePath, UPLOAD_DIR);
         }
 
         // 删除缩略图 (本地)
         if (file.thumbnail_path) {
             const thumbPath = path.join(THUMBNAIL_DIR, path.basename(file.thumbnail_path));
-            if (fs.existsSync(thumbPath)) {
-                fs.unlinkSync(thumbPath);
-            }
+            await safeUnlink(thumbPath, THUMBNAIL_DIR);
         }
 
         // 删除数据库记录
@@ -494,17 +491,13 @@ router.post('/batch-delete', async (req: Request, res: Response) => {
                     await provider.deleteFile(file.path);
                 } else {
                     const filePath = file.path || path.join(UPLOAD_DIR, file.stored_name);
-                    if (fs.existsSync(filePath)) {
-                        fs.unlinkSync(filePath);
-                    }
+                    await safeUnlink(filePath, UPLOAD_DIR);
                 }
 
                 // 删除缩略图
                 if (file.thumbnail_path) {
                     const thumbPath = path.join(THUMBNAIL_DIR, path.basename(file.thumbnail_path));
-                    if (fs.existsSync(thumbPath)) {
-                        fs.unlinkSync(thumbPath);
-                    }
+                    await safeUnlink(thumbPath, THUMBNAIL_DIR);
                 }
             } catch (err) {
                 console.error(`删除物理文件失败 (ID: ${file.id}):`, err);
