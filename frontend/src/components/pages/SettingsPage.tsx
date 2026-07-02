@@ -681,13 +681,13 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                     <p className="text-xs text-muted-foreground leading-relaxed">
                                         1. 申请 Telegram 的 <code className="px-1 py-0.5 rounded bg-muted">api_id</code> 和 <code className="px-1 py-0.5 rounded bg-muted">api_hash</code>
                                         <br />2. 运行 <code className="px-1 py-0.5 rounded bg-muted">npm run login:telegram-user</code> 生成 session 文件
-                                        <br />3. 在后端环境变量里填写 <code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_USER_API_ID</code>、<code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_USER_API_HASH</code>、<code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_USER_SESSION_FILE</code>
+                                        <br />3. 在后端环境变量里填写 <code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_API_ID</code>、<code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_API_HASH</code>、<code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_USER_SESSION_FILE</code>
                                     </p>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">TELEGRAM_USER_API_ID</label>
+                                        <label className="text-sm font-medium">TELEGRAM_API_ID</label>
                                         <input
                                             type="text"
                                             readOnly
@@ -696,7 +696,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">TELEGRAM_USER_API_HASH</label>
+                                        <label className="text-sm font-medium">TELEGRAM_API_HASH</label>
                                         <input
                                             type="text"
                                             readOnly

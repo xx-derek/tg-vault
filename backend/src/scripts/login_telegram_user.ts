@@ -5,12 +5,12 @@ import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 
 async function main() {
-  const apiId = parseInt(process.env.TELEGRAM_USER_API_ID || process.env.TELEGRAM_API_ID || '0');
-  const apiHash = process.env.TELEGRAM_USER_API_HASH || process.env.TELEGRAM_API_HASH || '';
+  const apiId = parseInt(process.env.TELEGRAM_API_ID || '0');
+  const apiHash = process.env.TELEGRAM_API_HASH || '';
   const sessionFile = process.env.TELEGRAM_USER_SESSION_FILE || './data/telegram_user_session.txt';
 
   if (!apiId || !apiHash) {
-    throw new Error('Missing TELEGRAM_USER_API_ID / TELEGRAM_USER_API_HASH');
+    throw new Error('Missing TELEGRAM_API_ID / TELEGRAM_API_HASH');
   }
 
   const sessionDir = path.dirname(sessionFile);

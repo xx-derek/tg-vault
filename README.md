@@ -36,15 +36,13 @@ vi .env
 
 至少建议先填写：
 
-- `DB_PASSWORD`
-- `VITE_API_URL`
-- `CORS_ORIGIN`
-- `DOMAIN`
-- 如需 Telegram Bot，再填写 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_API_ID`、`TELEGRAM_API_HASH`
-- 如需账号级 Telegram 下载器，再填写 `TELEGRAM_USER_API_ID`、`TELEGRAM_USER_API_HASH`
+| 使用场景 | 需要填写/执行 |
+| :--- | :--- |
+| 基础 Web 部署 | `DB_PASSWORD`、`VITE_API_URL`、`CORS_ORIGIN`、`DOMAIN` |
+| 启用 Telegram Bot 基础能力 | 额外填写 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_API_ID`、`TELEGRAM_API_HASH` |
+| 启用账号级 Telegram 下载器 | 在 Bot 基础配置之后，运行登录脚本生成 `TELEGRAM_USER_SESSION_FILE` |
 
-> [!TIP]
-> `ACCESS_PASSWORD_HASH` 现在仅作为旧部署兼容项。全新部署推荐留空，启动后首次访问 Web 页面创建网页管理员密码和 Telegram Bot 4 位 PIN。
+> Bot 基础能力包括：收文件、任务管理、存储统计、删除文件、yt-dlp 下载等。账号级下载器主要用于频道/群组批量抓取、订阅同步和超过 Bot 限制的大文件下载。
 
 ### 3. 构建前端
 
@@ -102,18 +100,11 @@ docker compose up -d
 | `DB_PASSWORD` | PostgreSQL 数据库密码 | `change_me_to_a_strong_password` | 自行生成强密码，首次部署前写入 `.env` |
 | `CORS_ORIGIN` | 允许跨域的前端来源 | `https://cloud.yourdomain.com` | 你的前端网页公网地址，例如 Nginx/Caddy 指向宿主机 `47832` |
 | `DOMAIN` | 应用主域名，不带协议 | `cloud.yourdomain.com` | 填前端主域名，用于生成链接和展示 |
-| `ACCESS_PASSWORD_HASH` | 可选，旧部署兼容的网页登录密码 SHA-256 Hash | `sha256_hash_here...` | 新部署推荐留空并通过首次 Web 初始化创建管理员；仅迁移旧配置时使用 |
-| `TELEGRAM_BOT_TOKEN` | 可选，Telegram Bot Token | `123456:ABC-DEF...` | 找 [@BotFather](https://t.me/BotFather) 创建机器人后获取 |
-| `TELEGRAM_API_ID` | 可选，Telegram API ID | `123456` | 登录 [my.telegram.org](https://my.telegram.org) 创建应用后获取 |
-| `TELEGRAM_API_HASH` | 可选，Telegram API Hash | `abcdef123456...` | 与 `TELEGRAM_API_ID` 在同一页面获取 |
-| `TELEGRAM_USER_API_ID` | 可选，账号级下载器 API ID | `123456` | 通常可与 `TELEGRAM_API_ID` 相同；用于用户账号 MTProto session |
-| `TELEGRAM_USER_API_HASH` | 可选，账号级下载器 API Hash | `abcdef123456...` | 通常可与 `TELEGRAM_API_HASH` 相同；用于用户账号 MTProto session |
-| `TELEGRAM_USER_SESSION_FILE` | 可选，用户账号 session 文件路径 | `/data/telegram_user_session.txt` | 运行 `docker compose run --rm --no-deps backend npm run login:telegram-user` 生成 |
-| `TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID` | 可选，桥接群/频道 ID；多人使用时推荐配置 | `-1001234567890` | 把 bot 和用户账号加入同一群/频道后获取聊天 ID |
-| `TELEGRAM_DOWNLOAD_WORKERS` | 可选，Telegram 并发下载 worker 数，建议 4-8 | `4` | 自行按线路稳定性调整；也可通过 Bot 的 `/download_workers` 菜单调整 |
-| `STORAGE_CLASSIFY_BY_PATH` | 可选，按来源/频道/文件类型自动分层保存 | `true` | 开启后如 `telegram/频道名/images/文件名`、`ytdlp/videos/文件名`；设为 `false` 恢复旧式平铺/手动 folder |
-| `STORAGE_PATH_BY_SOURCE` | 可选，保存路径是否按来源/频道分层 | `true` | 也可通过 Bot 的 `/path_rules` 菜单调整 |
-| `STORAGE_PATH_BY_TYPE` | 可选，保存路径是否按文件类型分层 | `true` | 类型会细分为 `archives`、`pdfs`、`code` 等 |
+| `TELEGRAM_BOT_TOKEN` | 可选，Telegram Bot Token；启用 Bot 基础能力时填写 | `123456:ABC-DEF...` | 找 [@BotFather](https://t.me/BotFather) 创建机器人后获取 |
+| `TELEGRAM_API_ID` | 可选，Telegram API ID；Bot 和账号级下载器共用 | `123456` | 登录 [my.telegram.org](https://my.telegram.org) 创建应用后获取 |
+| `TELEGRAM_API_HASH` | 可选，Telegram API Hash；Bot 和账号级下载器共用 | `abcdef123456...` | 与 `TELEGRAM_API_ID` 在同一页面获取 |
+| `TELEGRAM_USER_SESSION_FILE` | 可选，用户账号 session 文件路径；不生成 session 时 Bot 基础功能仍可用 | `/data/telegram_user_session.txt` | 仅在需要频道/群组批量抓取、订阅同步或突破 Bot 大文件限制时，运行 `docker compose run --rm --no-deps backend npm run login:telegram-user` 生成 |
+| `TELEGRAM_DOWNLOAD_WORKERS` | 可选，Telegram 并发分片请求数，建议 4-8 | `4` | 主要影响 Telegram 文件下载速度；调太高可能触发限流 |
 | `DUPLICATE_FILE_MODE` | 可选，重复文件处理策略 | `copy` | `copy` 生成副本，`skip` 跳过同名同目录同大小文件；也可用 `/duplicate_mode` 调整 |
 | `AUTO_CLEANUP_ORPHANS` | 可选，是否自动清理本地孤儿文件 | `true` | 只扫描本地 `UPLOAD_DIR`，不清理第三方云存储；可用 `/cleanup_settings` 关闭 |
 | `YTDLP_BIN` | 可选，yt-dlp 可执行文件路径 | `yt-dlp` | 镜像内默认已安装；只有自定义环境找不到命令时才需要改 |
@@ -126,7 +117,18 @@ docker compose up -d
 
 ## 🤖 Telegram Bot 配置指南
 
-集成 Telegram Bot 后，你可以通过聊天窗口上传文件、查看任务、删除文件、查看存储统计、调用 yt-dlp 下载视频链接，也可以通过账号级下载器把 Telegram 频道/群组媒体转存到当前存储源。
+集成 Telegram Bot 后，你可以通过聊天窗口上传文件、查看任务、删除文件、查看存储统计、调用 yt-dlp 下载视频链接。
+
+| 能力 | 只启用 Bot | 额外启用账号级下载器 |
+| :--- | :---: | :---: |
+| 私聊发送文件给 Bot 转存 | ✅ | ✅ |
+| 任务管理、存储统计、删除文件 | ✅ | ✅ |
+| `/ytdlp` 下载视频链接 | ✅ | ✅ |
+| 频道/群组按日期或标签批量抓取 | ❌ | ✅ |
+| 频道订阅自动同步 | ❌ | ✅ |
+| 超过 Bot 限制的大文件下载 | 可能失败 | 更稳定 |
+
+账号级下载器不是 Bot 基础功能的前提；它只在需要用户账号可见性的频道/群组媒体、订阅同步或大文件下载时使用。
 
 ### 1. 获取 Bot Token
 
@@ -140,16 +142,21 @@ docker compose up -d
 1. 访问 [my.telegram.org](https://my.telegram.org) 并登录 Telegram 账号。
 2. 进入 `API development tools`。
 3. 创建应用后复制 `api_id` 和 `api_hash`。
-4. 如果只用 bot 基础能力，写入 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`。
-5. 如果启用账号级下载器，同时写入 `TELEGRAM_USER_API_ID` / `TELEGRAM_USER_API_HASH`。
+4. 写入 `.env` 的 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`。
+5. 如果启用账号级下载器，继续运行 `docker compose run --rm --no-deps backend npm run login:telegram-user` 生成用户账号 session；它会复用同一组 `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`。
 
-### 3. 单人/多人使用建议
+### 3. 账号级下载器什么时候需要？
 
-| 场景 | 推荐配置 | 说明 |
-| :--- | :--- | :--- |
-| 单人自用 | 不配置桥接聊天 | 生成 session 的用户账号需要能看到 bot 私聊里的媒体消息 |
-| 多人使用 | 配置 `TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID` | bot 会把私聊收到的文件转发到桥接群/频道，用户账号再从桥接聊天下载 |
-| 频道桥接 | bot 通常需要管理员/发消息权限 | bot 和用户账号都必须能访问该频道 |
+账号级下载器会用你登录的 Telegram 用户账号读取媒体。**不生成 session 时，Bot 基础能力仍然可用**；只有下面这些场景建议启用：
+
+- 频道/群组转存：用户账号需要加入对应频道/群组，并确保能看到历史媒体。
+- 按日期/标签批量抓取：`/tg_date`、`/tg_preview_date`、`/tg_download` 依赖用户账号访问来源消息。
+- 频道订阅同步：`/tg_sub` 后台扫描依赖用户账号读取频道/群组新消息。
+- 大文件下载：Bot 直接下载受 Telegram Bot 限制影响，账号级下载器通常更稳定。
+
+私聊发普通文件给 Bot、任务管理、存储统计、删除文件、`/ytdlp` 不依赖账号级下载器。
+
+> 不再提供桥接群/频道自动转发配置，避免额外权限和隐私复杂度。
 
 ### 4. Telegram 并发下载调参
 
@@ -175,12 +182,11 @@ docker compose up -d
 | `/tasks` | 查看当前传输任务队列和下载进度 |
 | `/stop_tasks` | 强制停止所有下载任务 |
 | `/download_workers` | 打开并发下载调参面板 (4 / 8 / 12 / 16) |
-| `/path_rules` | 设置保存路径是否按来源/频道、文件类型分层 |
 | `/duplicate_mode` | 设置重复文件跳过或生成副本 |
 | `/cleanup_settings` | 设置自动清理开关，本地存储用户可关闭以防默认删除文件 |
-| `/tg_date` | 按日期向导抓取 Telegram 频道/群组媒体 |
-| `/tg_preview_date` | 预览指定日期范围内可下载的 Telegram 媒体 |
-| `/tg_sub` | 管理 Telegram 频道订阅，支持查看、添加和取消订阅 |
+| `/tg_date` | 按日期向导抓取 Telegram 频道/群组媒体，需要账号级下载器 |
+| `/tg_preview_date` | 预览指定日期范围内可下载的 Telegram 媒体，需要账号级下载器 |
+| `/tg_sub` | 管理 Telegram 频道订阅，支持查看、添加和取消订阅，需要账号级下载器 |
 | `/delete <ID>` | 删除指定文件，支持 ID 前缀 |
 | `/ytdlp <url>` | 解析视频链接并下载到当前存储源 |
 
@@ -191,7 +197,7 @@ docker compose up -d
 
 ## 📡 Telegram 转存与订阅
 
-账号级 Telegram 下载器支持把频道/群组中的媒体转存到 FlClouds，并交给当前启用的存储源保存。
+频道/群组批量转存与订阅同步需要账号级 Telegram 下载器。启用后，系统会把频道/群组中的媒体转存到 FlClouds，并交给当前启用的存储源保存。
 
 - `/tg_date`：按向导输入频道、开始日期和结束日期，抓取指定日期范围内的媒体
 - `/tg_preview_date`：先预览日期范围内的媒体数量与概况，再决定是否下载
@@ -221,33 +227,18 @@ docker compose up -d
 
 FlClouds 默认采用“首次初始化”模式保护 Web 和 API：
 
-1. 全新部署时可以不填写 `ACCESS_PASSWORD_HASH`。
-2. 服务启动后，首次访问 Web 页面会要求创建：
+1. 服务启动后，首次访问 Web 页面会要求创建：
    - 网页管理员密码：至少 8 位，使用 `scrypt` 加盐哈希后保存到数据库。
    - Telegram Bot 4 位 PIN：仅用于 Bot `/start` 身份验证，同样使用 `scrypt` 加盐哈希保存。
-3. 登录成功后，浏览器会获得 HttpOnly Cookie 会话，前端不再把访问 token 写入 `localStorage`。
-4. 修改类请求会校验 `Origin`，请确保 `.env` 中的 `CORS_ORIGIN` 与前端公网地址一致。
+2. 登录成功后，浏览器会获得 HttpOnly Cookie 会话，前端不再把访问 token 写入 `localStorage`。
+3. 修改类请求会校验 `Origin`，请确保 `.env` 中的 `CORS_ORIGIN` 与前端公网地址一致。
 
 > [!IMPORTANT]
 > 生产环境请使用 HTTPS。默认 `COOKIE_SECURE=true` 时，浏览器只会在 HTTPS 下发送登录 Cookie；如果你只在本地 HTTP 调试，可临时设置 `COOKIE_SECURE=false`。
 
-### 旧部署密码兼容
+### 旧部署密码迁移
 
-旧版本通过 `ACCESS_PASSWORD_HASH` 配置 SHA-256 密码哈希。当前版本仍兼容这种方式，便于平滑升级；但新部署推荐使用首次初始化创建管理员密码。
-
-如果必须生成旧式 SHA-256 Hash，可使用：
-
-```bash
-node -e "console.log(require('crypto').createHash('sha256').update('your_password').digest('hex'))"
-```
-
-Linux/macOS 也可以：
-
-```bash
-echo -n "your_password" | sha256sum | awk '{print $1}'
-```
-
-将生成的 64 位字符串填入 `.env` 的 `ACCESS_PASSWORD_HASH`。使用旧式哈希时，Telegram Bot 会在首次设置独立 PIN 前兼容旧密码验证。
+旧版本已写入数据库的 SHA-256 密码哈希仍可被识别，登录成功后建议尽快在设置中更新为新密码。全新部署请直接使用首次初始化流程创建网页管理员密码和 Telegram Bot 4 位 PIN。
 
 ### 自动密钥说明
 

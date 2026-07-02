@@ -32,7 +32,7 @@ function verifySecret(secret: string, stored: string): boolean {
         return safeEqualText(actual, expected);
     }
 
-    // Legacy compatibility: ACCESS_PASSWORD_HASH used SHA-256 hex.
+    // Legacy compatibility: older database records may store SHA-256 hex.
     if (/^[a-f0-9]{64}$/i.test(stored)) {
         const actual = crypto.createHash('sha256').update(secret).digest('hex');
         return safeEqualText(actual, stored.toLowerCase());
@@ -43,7 +43,7 @@ function verifySecret(secret: string, stored: string): boolean {
 
 export async function getStoredWebPasswordHash(): Promise<string> {
     const stored = await getSetting<string>(WEB_PASSWORD_KEY, '');
-    return stored || process.env.ACCESS_PASSWORD_HASH || '';
+    return stored || '';
 }
 
 export async function isInitialSetupRequired(): Promise<boolean> {

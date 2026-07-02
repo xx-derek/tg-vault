@@ -16,13 +16,8 @@ export interface StoragePathRules {
     byType: boolean;
 }
 
-function isEnabled(value: string | undefined, defaultValue: boolean): boolean {
-    if (value === undefined || value === '') return defaultValue;
-    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
-}
-
 export function shouldClassifyStoragePath(): boolean {
-    return isEnabled(process.env.STORAGE_CLASSIFY_BY_PATH, true);
+    return true;
 }
 
 export function getTypeFolder(mimeType?: string | null): string | null {

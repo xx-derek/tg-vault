@@ -79,7 +79,6 @@ async function getTelegramDownloadWorkers(): Promise<number> {
 
 // 用于追踪 Telegram FloodWait 的全局截止时间
 let floodWaitUntil = 0;
-const bridgedMessageCache = new Map<string, Api.Message>();
 
 async function getFirstUserVisibleMediaMessage(
     userClient: TelegramClient,
@@ -109,35 +108,6 @@ async function resolveDownloadSource(botClient: TelegramClient, message: Api.Mes
     const userClient = getTelegramUserClient();
     if (!userClient || !isTelegramUserClientReady()) {
         throw new Error('Telegram 用户账号下载已开启，但 user session 未就绪');
-    }
-
-    const bridgeChatId = process.env.TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID;
-    if (bridgeChatId) {
-        let sourceMessageId = message.id;
-        const originalChatId = message.chatId?.toString();
-
-        if (originalChatId !== bridgeChatId) {
-            const cacheKey = `${originalChatId || 'unknown'}:${message.id}`;
-            let bridgedMessage = bridgedMessageCache.get(cacheKey);
-
-            if (!bridgedMessage) {
-                const forwardedMessages = await botClient.forwardMessages(bridgeChatId, { messages: message, fromPeer: message.inputChat! });
-                bridgedMessage = forwardedMessages?.[0];
-                if (!bridgedMessage?.id) {
-                    throw new Error('已配置桥接聊天，但 bot 未能把文件转发到桥接聊天；请确认 bot 在桥接群/频道内且有发消息权限');
-                }
-                bridgedMessageCache.set(cacheKey, bridgedMessage);
-            }
-
-            sourceMessageId = bridgedMessage.id;
-        }
-
-        const bridgeMessage = await getFirstUserVisibleMediaMessage(userClient, bridgeChatId, sourceMessageId);
-        if (bridgeMessage) {
-            return { client: userClient, message: bridgeMessage };
-        }
-
-        throw new Error('Telegram 用户账号无法读取桥接聊天里的媒体消息，请确认 bot 和用户账号都在桥接群/频道中，bot 有发消息权限，用户账号能看到桥接聊天');
     }
 
     const fwdFrom = message.fwdFrom as any;
@@ -1894,7 +1864,7 @@ export async function downloadTelegramChannelRange(
 ): Promise<{ requested: number; found: number; skipped: number; failed: number; successful: number; successfulMessageIds: number[]; failedMessageIds: number[]; skippedMessageIds: number[]; firstId: number; lastId: number }> {
     const userClient = getTelegramUserClient();
     if (!userClient || !isTelegramUserClientReady()) {
-        throw new Error('Telegram 用户账号下载器未就绪：请先配置 TELEGRAM_USER_API_ID / TELEGRAM_USER_API_HASH 并生成 user session');
+        throw new Error('Telegram 用户账号下载器未就绪：请先配置 TELEGRAM_API_ID / TELEGRAM_API_HASH 并生成 user session');
     }
 
     const safeLimit = Math.max(1, Math.floor(limit || TG_BATCH_DEFAULT_LIMIT));

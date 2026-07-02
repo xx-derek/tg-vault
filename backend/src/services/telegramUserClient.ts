@@ -7,11 +7,11 @@ let userClient: TelegramClient | null = null;
 let userSessionFilePath = '';
 
 function getUserApiId(): number {
-  return parseInt(process.env.TELEGRAM_USER_API_ID || '0');
+  return parseInt(process.env.TELEGRAM_API_ID || '0');
 }
 
 function getUserApiHash(): string {
-  return process.env.TELEGRAM_USER_API_HASH || '';
+  return process.env.TELEGRAM_API_HASH || '';
 }
 
 function getSessionFilePath(): string {

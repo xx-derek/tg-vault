@@ -13,6 +13,7 @@ import authRouter, { requireAuth } from './routes/auth.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
 import { initTelegramBot } from './services/telegramBot.js';
 import { initTelegramUserClient, isTelegramUserClientReady } from './services/telegramUserClient.js';
+import { isInitialSetupRequired } from './utils/authSettings.js';
 import helmet from 'helmet';
 
 dotenv.config();
@@ -127,7 +128,6 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 app.listen(PORT, async () => {
-    const passwordProtected = !!process.env.ACCESS_PASSWORD_HASH;
     const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
 
     // 初始化存储管理器
@@ -144,12 +144,14 @@ app.listen(PORT, async () => {
         await initTelegramBot();
     }
 
+    const initialSetupRequired = await isInitialSetupRequired();
+
     console.log(`
 🚀 FlClouds 后端服务已启动
 📍 端口: ${PORT}
 📁 上传目录: ${path.resolve(UPLOAD_DIR)}
 🖼️  缩略图目录: ${path.resolve(THUMBNAIL_DIR)}
-🔐 密码保护: ${passwordProtected ? '已启用' : '未启用'}
+🔐 密码保护: ${initialSetupRequired ? '待首次初始化' : '已启用'}
 🤖 Telegram Bot: ${telegramEnabled ? '已启用 (最大 2GB，账号级下载器不受此限制)' : '未启用'}
 👤 Telegram User Download: ${isTelegramUserClientReady() ? '已启用' : '未启用'}
     `);

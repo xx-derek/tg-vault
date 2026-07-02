@@ -1622,12 +1622,8 @@ import crypto8 from "crypto";
 init_secretStore();
 import dotenv2 from "dotenv";
 dotenv2.config();
-var ACCESS_PASSWORD_HASH = process.env.ACCESS_PASSWORD_HASH || "";
 function loadSessionSecret() {
   const secret = getOrCreatePersistentSecret("SESSION_SECRET", "session_secret");
-  if (ACCESS_PASSWORD_HASH && secret === ACCESS_PASSWORD_HASH) {
-    throw new Error("SESSION_SECRET must be independent from ACCESS_PASSWORD_HASH. Remove the generated secret file or set SESSION_SECRET to a separate value.");
-  }
   if (secret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters long. Remove the generated secret file or set SESSION_SECRET to a value from: openssl rand -hex 32");
   }
@@ -1636,10 +1632,9 @@ function loadSessionSecret() {
 }
 var SESSION_SECRET = loadSessionSecret();
 var TOKEN_EXPIRY = 7 * 24 * 60 * 60 * 1e3;
-var TELEGRAM_USER_API_ID = process.env.TELEGRAM_USER_API_ID || "";
-var TELEGRAM_USER_API_HASH = process.env.TELEGRAM_USER_API_HASH || "";
+var TELEGRAM_API_ID = process.env.TELEGRAM_API_ID || "";
+var TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || "";
 var TELEGRAM_USER_SESSION_FILE = process.env.TELEGRAM_USER_SESSION_FILE || "./data/telegram_user_session.txt";
-var TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID = process.env.TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID || "";
 var TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || "4", 10) || 4));
 
 // src/routes/auth.ts
@@ -1816,7 +1811,7 @@ function verifySecret(secret, stored) {
 }
 async function getStoredWebPasswordHash() {
   const stored = await getSetting(WEB_PASSWORD_KEY, "");
-  return stored || process.env.ACCESS_PASSWORD_HASH || "";
+  return stored || "";
 }
 async function isInitialSetupRequired() {
   return !await getStoredWebPasswordHash();
@@ -2755,10 +2750,10 @@ import { StringSession } from "telegram/sessions/index.js";
 var userClient = null;
 var userSessionFilePath = "";
 function getUserApiId() {
-  return parseInt(process.env.TELEGRAM_USER_API_ID || "0");
+  return parseInt(process.env.TELEGRAM_API_ID || "0");
 }
 function getUserApiHash() {
-  return process.env.TELEGRAM_USER_API_HASH || "";
+  return process.env.TELEGRAM_API_HASH || "";
 }
 function getSessionFilePath() {
   return process.env.TELEGRAM_USER_SESSION_FILE || "./data/telegram_user_session.txt";
@@ -2843,12 +2838,8 @@ async function getUniqueStoredName(originalName, folder = null, storageAccountId
 
 // src/utils/storagePath.ts
 import path9 from "path";
-function isEnabled(value, defaultValue) {
-  if (value === void 0 || value === "") return defaultValue;
-  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
-}
 function shouldClassifyStoragePath() {
-  return isEnabled(process.env.STORAGE_CLASSIFY_BY_PATH, true);
+  return true;
 }
 function getTypeFolder(mimeType) {
   const type = getFileType(mimeType || "");
@@ -3250,7 +3241,6 @@ async function getTelegramDownloadWorkers() {
   return clampDownloadWorkers(storedValue);
 }
 var floodWaitUntil = 0;
-var bridgedMessageCache = /* @__PURE__ */ new Map();
 async function getFirstUserVisibleMediaMessage(userClient2, sourceEntity, sourceMessageId) {
   try {
     const [userVisibleMessage] = await userClient2.getMessages(sourceEntity, { ids: sourceMessageId });
@@ -3272,29 +3262,6 @@ async function resolveDownloadSource(botClient, message) {
   const userClient2 = getTelegramUserClient();
   if (!userClient2 || !isTelegramUserClientReady()) {
     throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5DF2\u5F00\u542F\uFF0C\u4F46 user session \u672A\u5C31\u7EEA");
-  }
-  const bridgeChatId = process.env.TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID;
-  if (bridgeChatId) {
-    let sourceMessageId = message.id;
-    const originalChatId = message.chatId?.toString();
-    if (originalChatId !== bridgeChatId) {
-      const cacheKey = `${originalChatId || "unknown"}:${message.id}`;
-      let bridgedMessage = bridgedMessageCache.get(cacheKey);
-      if (!bridgedMessage) {
-        const forwardedMessages = await botClient.forwardMessages(bridgeChatId, { messages: message, fromPeer: message.inputChat });
-        bridgedMessage = forwardedMessages?.[0];
-        if (!bridgedMessage?.id) {
-          throw new Error("\u5DF2\u914D\u7F6E\u6865\u63A5\u804A\u5929\uFF0C\u4F46 bot \u672A\u80FD\u628A\u6587\u4EF6\u8F6C\u53D1\u5230\u6865\u63A5\u804A\u5929\uFF1B\u8BF7\u786E\u8BA4 bot \u5728\u6865\u63A5\u7FA4/\u9891\u9053\u5185\u4E14\u6709\u53D1\u6D88\u606F\u6743\u9650");
-        }
-        bridgedMessageCache.set(cacheKey, bridgedMessage);
-      }
-      sourceMessageId = bridgedMessage.id;
-    }
-    const bridgeMessage = await getFirstUserVisibleMediaMessage(userClient2, bridgeChatId, sourceMessageId);
-    if (bridgeMessage) {
-      return { client: userClient2, message: bridgeMessage };
-    }
-    throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u65E0\u6CD5\u8BFB\u53D6\u6865\u63A5\u804A\u5929\u91CC\u7684\u5A92\u4F53\u6D88\u606F\uFF0C\u8BF7\u786E\u8BA4 bot \u548C\u7528\u6237\u8D26\u53F7\u90FD\u5728\u6865\u63A5\u7FA4/\u9891\u9053\u4E2D\uFF0Cbot \u6709\u53D1\u6D88\u606F\u6743\u9650\uFF0C\u7528\u6237\u8D26\u53F7\u80FD\u770B\u5230\u6865\u63A5\u804A\u5929");
   }
   const fwdFrom = message.fwdFrom;
   const forwardedSourcePeer = fwdFrom?.savedFromPeer || fwdFrom?.fromId;
@@ -4587,7 +4554,7 @@ async function handleCleanupCallback(cleanupId) {
 async function downloadTelegramChannelRange(botClient, requestMessage, source, startMessageId, limit = 50, direction = "older", explicitIds, folderOverride) {
   const userClient2 = getTelegramUserClient();
   if (!userClient2 || !isTelegramUserClientReady()) {
-    throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5668\u672A\u5C31\u7EEA\uFF1A\u8BF7\u5148\u914D\u7F6E TELEGRAM_USER_API_ID / TELEGRAM_USER_API_HASH \u5E76\u751F\u6210 user session");
+    throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5668\u672A\u5C31\u7EEA\uFF1A\u8BF7\u5148\u914D\u7F6E TELEGRAM_API_ID / TELEGRAM_API_HASH \u5E76\u751F\u6210 user session");
   }
   const safeLimit = Math.max(1, Math.floor(limit || TG_BATCH_DEFAULT_LIMIT));
   const ids = explicitIds?.filter((id) => id > 0) || Array.from({ length: safeLimit }, (_, index) => direction === "newer" ? startMessageId + index : startMessageId - index).filter((id) => id > 0);
@@ -10084,7 +10051,6 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: "\u670D\u52A1\u5668\u5185\u90E8\u9519\u8BEF" });
 });
 app.listen(PORT, async () => {
-  const passwordProtected = !!process.env.ACCESS_PASSWORD_HASH;
   const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
   try {
     const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
@@ -10096,12 +10062,13 @@ app.listen(PORT, async () => {
     await initTelegramUserClient();
     await initTelegramBot();
   }
+  const initialSetupRequired = await isInitialSetupRequired();
   console.log(`
 \u{1F680} FlClouds \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
 \u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path21.resolve(UPLOAD_DIR9)}
 \u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path21.resolve(THUMBNAIL_DIR8)}
-\u{1F510} \u5BC6\u7801\u4FDD\u62A4: ${passwordProtected ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
+\u{1F510} \u5BC6\u7801\u4FDD\u62A4: ${initialSetupRequired ? "\u5F85\u9996\u6B21\u521D\u59CB\u5316" : "\u5DF2\u542F\u7528"}
 \u{1F916} Telegram Bot: ${telegramEnabled ? "\u5DF2\u542F\u7528 (\u6700\u5927 2GB\uFF0C\u8D26\u53F7\u7EA7\u4E0B\u8F7D\u5668\u4E0D\u53D7\u6B64\u9650\u5236)" : "\u672A\u542F\u7528"}
 \u{1F464} Telegram User Download: ${isTelegramUserClientReady() ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
     `);
