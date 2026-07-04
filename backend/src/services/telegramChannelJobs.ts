@@ -1053,6 +1053,16 @@ async function runSubscriptionScan(botClient: TelegramClient) {
             const subscriptionRefs = candidateMessages
                 .map(message => toChannelDownloadRef(row.source, message))
                 .filter((ref): ref is TelegramDownloadMessageRef => Boolean(ref));
+
+            // 新消息中没有可下载媒体（纯文本/服务消息等）：无需下载，但仍要推进游标，
+            // 否则每轮都会重复扫描这些消息，并触发 downloadTelegramChannelRange 的“起始消息 ID 无效”。
+            if (subscriptionRefs.length === 0) {
+                const scannedMaxId = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
+                await updateJob(jobId, { status: 'completed', enqueued_count: 0, skipped_count: 0, finished_at: new Date() });
+                await query('UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2', [scannedMaxId, row.id]);
+                continue;
+            }
+
             await markDownloadRefsDownloading(jobId, subscriptionRefs);
             const downloadResult = await downloadTelegramChannelRange(botClient, requestMessage, row.source, 0, ids.length, 'newer', ids, row.folder_override || null, subscriptionRefs, (ref, status, error) => markDownloadRefStatus(jobId, ref, status, error));
             await updateJob(jobId, {
