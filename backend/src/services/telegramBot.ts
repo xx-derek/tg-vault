@@ -837,6 +837,9 @@ function buildSubscriptionActionKeyboard(rows: any[], page = 0): Api.ReplyInline
             new Api.KeyboardButtonRow({
                 buttons: [new Api.KeyboardButtonCallback({ text: '➕ 从已加入的频道/群组中选择订阅', data: Buffer.from('tsub_pick_0') })],
             }),
+            new Api.KeyboardButtonRow({
+                buttons: [new Api.KeyboardButtonCallback({ text: '✅ 完成 / 关闭', data: Buffer.from('tsub_close') })],
+            }),
         ],
     });
 }
@@ -948,7 +951,7 @@ function buildSubscriptionManagePanel(rows: any[], page = 0): string {
         '',
         '新增订阅时会询问是否为本订阅单独指定保存目录；该目录只影响这个订阅，不会改变全局 /path_rules。',
         '',
-        '发送“取消”可退出。',
+        '点击「✅ 完成 / 关闭」或发送“取消”可退出。',
     ].join('\n');
 }
 
@@ -1281,6 +1284,15 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
     const userId = update.userId.toJSNumber();
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    if (data === 'tsub_close') {
+        clearPickerSelections(userId);
+        // 若当前处于订阅管理向导（等待输入频道），一并结束，避免后续文本被误判为新增订阅
+        const st = telegramWizardStates.get(userId);
+        if (st?.kind === 'tg_sub_manage') telegramWizardStates.delete(userId);
+        await client.editMessage(update.peer, { message: update.msgId, text: '✅ 已关闭订阅管理。随时发送 /tg_sub 或 /menu 重新打开。' });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已关闭' }));
         return;
     }
     if (data === 'tsub_back') {
