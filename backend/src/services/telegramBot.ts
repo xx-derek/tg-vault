@@ -585,11 +585,18 @@ function buildSubscriptionActionKeyboard(rows: any[]): Api.ReplyInlineMarkup {
 
 const TSUB_PICK_PAGE_SIZE = 8;
 
-async function buildDialogPickerView(page: number): Promise<{ text: string; buttons: Api.ReplyInlineMarkup }> {
+async function buildDialogPickerView(userId: number, page: number): Promise<{ text: string; buttons: Api.ReplyInlineMarkup }> {
     const { items } = await listTelegramDialogs(undefined, 200);
-    const pageCount = Math.max(1, Math.ceil(items.length / TSUB_PICK_PAGE_SIZE));
+    const subs = await listTelegramSubscriptions(userId);
+    const subscribedSources = new Set(subs.map(s => s.source));
+    const subscribedTitles = new Set(subs.map(s => s.title?.toLowerCase()).filter(Boolean));
+    const filtered = items.filter(item =>
+        !subscribedSources.has(item.id) &&
+        !subscribedTitles.has(item.title.toLowerCase())
+    );
+    const pageCount = Math.max(1, Math.ceil(filtered.length / TSUB_PICK_PAGE_SIZE));
     const safePage = Math.min(Math.max(0, page), pageCount - 1);
-    const pageItems = items.slice(safePage * TSUB_PICK_PAGE_SIZE, (safePage + 1) * TSUB_PICK_PAGE_SIZE);
+    const pageItems = filtered.slice(safePage * TSUB_PICK_PAGE_SIZE, (safePage + 1) * TSUB_PICK_PAGE_SIZE);
     const rows = pageItems.map(item => new Api.KeyboardButtonRow({
         buttons: [new Api.KeyboardButtonCallback({
             text: `${item.kind.split(' ')[0]} ${item.title}`.slice(0, 40),
@@ -605,9 +612,9 @@ async function buildDialogPickerView(page: number): Promise<{ text: string; butt
         text: [
             '📡 **选择要订阅的频道/群组**',
             '',
-            items.length > 0
-                ? `点击下方按钮即可订阅（第 ${safePage + 1}/${pageCount} 页，共 ${items.length} 个）。`
-                : '用户账号尚未加入任何频道/群组。',
+            filtered.length > 0
+                ? `点击下方按钮即可订阅（第 ${safePage + 1}/${pageCount} 页，共 ${filtered.length} 个，已隐藏 ${items.length - filtered.length} 个已订阅频道）。`
+                : '用户账号尚未加入任何可以订阅的频道/群组（所有已加入的频道/群组均已订阅）。',
             '',
             '💡 私密频道/群组需要用户账号已加入后才能订阅。',
         ].join('\n'),
@@ -968,7 +975,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
     if (pickMatch) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '正在获取频道/群组列表…' }));
         try {
-            const view = await buildDialogPickerView(parseInt(pickMatch[1], 10));
+            const view = await buildDialogPickerView(userId, parseInt(pickMatch[1], 10));
             await client.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
         } catch (error) {
             await client.sendMessage(update.peer, { message: `❌ 获取频道/群组列表失败: ${error instanceof Error ? error.message : String(error)}` });
