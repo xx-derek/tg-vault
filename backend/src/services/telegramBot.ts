@@ -521,7 +521,8 @@ async function startTelegramWizard(message: Api.Message, senderId: number, kind:
     telegramWizardStates.set(senderId, state);
     if (kind === 'tg_sub_manage') {
         const rows = await listTelegramSubscriptions(senderId);
-        await message.reply({ message: buildSubscriptionManagePanel(rows), buttons: buildSubscriptionActionKeyboard(rows) });
+        const page = resolveSubscriptionPage(senderId, rows, 0); // 每次打开面板从第一页开始
+        await message.reply({ message: buildSubscriptionManagePanel(rows, page), buttons: buildSubscriptionActionKeyboard(rows, page) });
         return;
     }
     await message.reply({
@@ -583,11 +584,12 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
                 const sub = await unsubscribeTelegramChannel(senderId, target.id);
                 telegramWizardStates.delete(senderId);
                 const rowsAfterCancel = await listTelegramSubscriptions(senderId);
+                const cancelPage = resolveSubscriptionPage(senderId, rowsAfterCancel);
                 await message.reply({
                     message: [
                         sub ? `✅ 已取消订阅 ${sub.title || sub.source}` : '❌ 未找到该订阅',
                         '',
-                        buildSubscriptionManagePanel(rowsAfterCancel),
+                        buildSubscriptionManagePanel(rowsAfterCancel, cancelPage),
                     ].join('\n')
                 });
                 return true;
@@ -626,14 +628,15 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
                 if (state.subscriptionId) {
                     const sub = await updateTelegramSubscriptionFolder(senderId, state.subscriptionId, state.customFolder || null);
                     const rowsAfterUpdate = await listTelegramSubscriptions(senderId);
+                    const updatePage = resolveSubscriptionPage(senderId, rowsAfterUpdate);
                     await message.reply({
                         message: [
                             sub ? `✅ 已更新订阅目录：${sub.title || sub.source}` : '❌ 未找到该订阅',
                             sub && state.customFolder ? `📁 专属目录：${state.customFolder}\n${buildPathPreviewLine(state.customFolder)}` : '📁 保存策略：默认自动分类',
                             '',
-                            buildSubscriptionManagePanel(rowsAfterUpdate),
+                            buildSubscriptionManagePanel(rowsAfterUpdate, updatePage),
                         ].filter(Boolean).join('\n'),
-                        buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate),
+                        buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate, updatePage),
                     });
                 } else if (state.sources) {
                     const subs: any[] = [];
@@ -649,8 +652,13 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
                     const lines: string[] = [];
                     if (subs.length > 0) {
                         lines.push(`✅ 已订阅 ${subs.length} 个频道/群组`);
-                        for (const sub of subs) {
+                        // 仅列出前若干个，避免批量订阅时消息超出 Telegram 4096 字符上限
+                        const LIST_CAP = 30;
+                        for (const sub of subs.slice(0, LIST_CAP)) {
                             lines.push(`  ${sub.title || sub.source} — ${sub.source}`);
+                        }
+                        if (subs.length > LIST_CAP) {
+                            lines.push(`  …等共 ${subs.length} 个（已全部订阅成功）`);
                         }
                     }
                     if (state.customFolder) {
@@ -751,21 +759,50 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
     return true;
 }
 
-function buildSubscriptionActionKeyboard(rows: any[]): Api.ReplyInlineMarkup {
+// 订阅管理面板每页展示的订阅数量（保持文本与按钮一致，避免超出 Telegram 4096 字符上限）
+const SUBSCRIPTION_PAGE_SIZE = 8;
+
+// 记住每个用户当前查看的订阅管理页码，便于操作后在同一页重新渲染
+const subscriptionManagePage = new Map<number, number>();
+
+function subscriptionPageCount(rows: any[]): number {
+    return Math.max(1, Math.ceil(rows.length / SUBSCRIPTION_PAGE_SIZE));
+}
+
+// 读取并夹取用户当前页码到有效范围
+function resolveSubscriptionPage(userId: number, rows: any[], requested?: number): number {
+    const pageCount = subscriptionPageCount(rows);
+    const raw = requested ?? subscriptionManagePage.get(userId) ?? 0;
+    const safe = Math.min(Math.max(0, raw), pageCount - 1);
+    subscriptionManagePage.set(userId, safe);
+    return safe;
+}
+
+function buildSubscriptionActionKeyboard(rows: any[], page = 0): Api.ReplyInlineMarkup {
+    const pageCount = subscriptionPageCount(rows);
+    const safePage = Math.min(Math.max(0, page), pageCount - 1);
+    const pageRows = rows.slice(safePage * SUBSCRIPTION_PAGE_SIZE, (safePage + 1) * SUBSCRIPTION_PAGE_SIZE);
+    const navButtons: Api.KeyboardButtonCallback[] = [];
+    if (safePage > 0) navButtons.push(new Api.KeyboardButtonCallback({ text: '⬅️ 上一页', data: Buffer.from(`tsub_page_${safePage - 1}`) }));
+    if (safePage < pageCount - 1) navButtons.push(new Api.KeyboardButtonCallback({ text: '➡️ 下一页', data: Buffer.from(`tsub_page_${safePage + 1}`) }));
     return new Api.ReplyInlineMarkup({
         rows: [
-            ...rows.slice(0, 8).flatMap((row, index) => [
-                new Api.KeyboardButtonRow({
-                    buttons: [new Api.KeyboardButtonCallback({ text: `${index + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })],
-                }),
-                new Api.KeyboardButtonRow({
-                    buttons: [
-                        new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) }),
-                        new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}`) }),
-                        new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) }),
-                    ],
-                }),
-            ]),
+            ...pageRows.flatMap((row, index) => {
+                const globalIndex = safePage * SUBSCRIPTION_PAGE_SIZE + index;
+                return [
+                    new Api.KeyboardButtonRow({
+                        buttons: [new Api.KeyboardButtonCallback({ text: `${globalIndex + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })],
+                    }),
+                    new Api.KeyboardButtonRow({
+                        buttons: [
+                            new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) }),
+                            new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}`) }),
+                            new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) }),
+                        ],
+                    }),
+                ];
+            }),
+            ...(navButtons.length > 0 ? [new Api.KeyboardButtonRow({ buttons: navButtons })] : []),
             new Api.KeyboardButtonRow({
                 buttons: [new Api.KeyboardButtonCallback({ text: '➕ 从已加入的频道/群组中选择订阅', data: Buffer.from('tsub_pick_0') })],
             }),
@@ -825,16 +862,25 @@ async function buildDialogPickerView(userId: number, page: number): Promise<{ te
     };
 }
 
-function buildSubscriptionManagePanel(rows: any[]): string {
+function buildSubscriptionManagePanel(rows: any[], page = 0): string {
+    const pageCount = subscriptionPageCount(rows);
+    const safePage = Math.min(Math.max(0, page), pageCount - 1);
+    const shown = rows.slice(safePage * SUBSCRIPTION_PAGE_SIZE, (safePage + 1) * SUBSCRIPTION_PAGE_SIZE);
+    const header = rows.length > SUBSCRIPTION_PAGE_SIZE
+        ? `📡 **频道订阅管理**（第 ${safePage + 1}/${pageCount} 页，共 ${rows.length} 个）`
+        : '📡 **频道订阅管理**';
     return [
-        '📡 **频道订阅管理**',
+        header,
         '',
         rows.length > 0
-            ? rows.map((row, index) => [
-                `${index + 1}. ${row.enabled ? '✅' : '⏸️'} ${row.title || row.source}`,
-                `   ${row.source} · last_id=${row.last_message_id || 0}`,
-                row.folder_override ? `   📁 专属目录：${row.folder_override}` : '   📁 保存策略：默认自动分类',
-            ].join('\n')).join('\n')
+            ? shown.map((row, index) => {
+                const globalIndex = safePage * SUBSCRIPTION_PAGE_SIZE + index;
+                return [
+                    `${globalIndex + 1}. ${row.enabled ? '✅' : '⏸️'} ${row.title || row.source}`,
+                    `   ${row.source} · last_id=${row.last_message_id || 0}`,
+                    row.folder_override ? `   📁 专属目录：${row.folder_override}` : '   📁 保存策略：默认自动分类',
+                ].join('\n');
+            }).join('\n')
             : '当前没有启用中的订阅。',
         '',
         rows.length > 0 ? '可直接点击订阅下方按钮修改/清除专属目录或取消订阅。' : '点击下方 ➕ 按钮从已加入的频道/群组中选择，或回复频道用户名/链接新增订阅。',
@@ -849,16 +895,31 @@ function buildSubscriptionManagePanel(rows: any[]): string {
 
 function formatSubscriptionList(rows: any[]): string {
     if (rows.length === 0) return '📭 暂无频道订阅。\n\n使用 `/tg_sub @频道` 添加订阅。';
-    return [
-        '📡 **频道订阅**',
-        '',
-        ...rows.map((row, index) => [
+    // Telegram 单条消息上限 4096 字符；按长度累积，超出则截断并提示剩余数量。
+    const MAX_LEN = 3800;
+    const header = '📡 **频道订阅**\n';
+    const entries: string[] = [];
+    let used = header.length;
+    let shownCount = 0;
+    for (let index = 0; index < rows.length; index++) {
+        const row = rows[index];
+        const entry = [
             `${index + 1}. ${row.enabled ? '✅' : '⏸️'} ${row.title || row.source}`,
             `   ${row.source} · last_id=${row.last_message_id || 0}`,
             row.folder_override ? `   📁 专属目录：${row.folder_override}` : '   📁 保存策略：默认自动分类',
             `   ID: ${String(row.id).slice(0, 8)}`,
-        ].join('\n')),
-    ].join('\n');
+        ].join('\n');
+        if (used + entry.length + 1 > MAX_LEN) break;
+        entries.push(entry);
+        used += entry.length + 1;
+        shownCount++;
+    }
+    const hidden = rows.length - shownCount;
+    return [
+        header,
+        ...entries,
+        hidden > 0 ? `\n…还有 ${hidden} 个订阅未显示（共 ${rows.length} 个）。` : '',
+    ].filter(Boolean).join('\n');
 }
 
 // Generate Password Keyboard
@@ -1166,10 +1227,25 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
     if (data === 'tsub_back') {
         clearPickerSelections(userId);
         const rowsForPanel = await listTelegramSubscriptions(userId);
+        const backPage = resolveSubscriptionPage(userId, rowsForPanel);
         await client.editMessage(update.peer, {
             message: update.msgId,
-            text: buildSubscriptionManagePanel(rowsForPanel),
-            buttons: buildSubscriptionActionKeyboard(rowsForPanel),
+            text: buildSubscriptionManagePanel(rowsForPanel, backPage),
+            buttons: buildSubscriptionActionKeyboard(rowsForPanel, backPage),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+        return;
+    }
+
+    // 订阅管理翻页
+    const pageMatch = data.match(/^tsub_page_(\d+)$/);
+    if (pageMatch) {
+        const rowsForPage = await listTelegramSubscriptions(userId);
+        const targetPage = resolveSubscriptionPage(userId, rowsForPage, parseInt(pageMatch[1], 10));
+        await client.editMessage(update.peer, {
+            message: update.msgId,
+            text: buildSubscriptionManagePanel(rowsForPage, targetPage),
+            buttons: buildSubscriptionActionKeyboard(rowsForPage, targetPage),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
         return;
@@ -1273,10 +1349,11 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
     if (action === 'clear') {
         await updateTelegramSubscriptionFolder(userId, id, null);
         const rowsAfterClear = await listTelegramSubscriptions(userId);
+        const clearPage = resolveSubscriptionPage(userId, rowsAfterClear);
         await client.editMessage(update.peer, {
             message: update.msgId,
-            text: buildSubscriptionManagePanel(rowsAfterClear),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterClear),
+            text: buildSubscriptionManagePanel(rowsAfterClear, clearPage),
+            buttons: buildSubscriptionActionKeyboard(rowsAfterClear, clearPage),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已清除专属目录' }));
         return;
@@ -1285,10 +1362,11 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
     if (action === 'cancel') {
         await unsubscribeTelegramChannel(userId, id);
         const rowsAfterCancel = await listTelegramSubscriptions(userId);
+        const cancelPage = resolveSubscriptionPage(userId, rowsAfterCancel);
         await client.editMessage(update.peer, {
             message: update.msgId,
-            text: buildSubscriptionManagePanel(rowsAfterCancel),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterCancel),
+            text: buildSubscriptionManagePanel(rowsAfterCancel, cancelPage),
+            buttons: buildSubscriptionActionKeyboard(rowsAfterCancel, cancelPage),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消订阅', alert: true }));
     }
