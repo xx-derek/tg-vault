@@ -86,6 +86,147 @@ function buildTelegramCommentsKeyboard(): Api.ReplyInlineMarkup {
     });
 }
 
+// ===== 主菜单 / 设置面板 / 快捷键盘 UX =====
+
+// 常驻快捷回复键盘的按钮文案（点击后作为普通消息发送，需在消息处理器中拦截）
+const QUICK_ACTIONS = {
+    subscribe: '📡 订阅频道',
+    download: '📦 下载频道',
+    tasks: '🔧 任务队列',
+    menu: '🏠 主菜单',
+} as const;
+const QUICK_ACTION_VALUES = new Set<string>(Object.values(QUICK_ACTIONS));
+
+function buildQuickActionKeyboard(): Api.ReplyKeyboardMarkup {
+    return new Api.ReplyKeyboardMarkup({
+        resize: true,
+        rows: [
+            new Api.KeyboardButtonRow({
+                buttons: [
+                    new Api.KeyboardButton({ text: QUICK_ACTIONS.subscribe }),
+                    new Api.KeyboardButton({ text: QUICK_ACTIONS.download }),
+                ],
+            }),
+            new Api.KeyboardButtonRow({
+                buttons: [
+                    new Api.KeyboardButton({ text: QUICK_ACTIONS.tasks }),
+                    new Api.KeyboardButton({ text: QUICK_ACTIONS.menu }),
+                ],
+            }),
+        ],
+    });
+}
+
+function buildMainMenu(): { text: string; buttons: Api.ReplyInlineMarkup } {
+    return {
+        text: [
+            '📂 **TG Vault 控制台**',
+            '',
+            '点击下方按钮即可操作，无需记忆命令。',
+            '也可直接发送 / 转发文件进行上传。',
+        ].join('\n'),
+        buttons: new Api.ReplyInlineMarkup({
+            rows: [
+                new Api.KeyboardButtonRow({
+                    buttons: [
+                        new Api.KeyboardButtonCallback({ text: '📡 订阅频道', data: Buffer.from('menu_sub') }),
+                        new Api.KeyboardButtonCallback({ text: '📦 下载频道', data: Buffer.from('menu_download') }),
+                    ],
+                }),
+                new Api.KeyboardButtonRow({
+                    buttons: [
+                        new Api.KeyboardButtonCallback({ text: '🔧 任务队列', data: Buffer.from('menu_tasks') }),
+                        new Api.KeyboardButtonCallback({ text: '💾 存储', data: Buffer.from('menu_storage') }),
+                    ],
+                }),
+                new Api.KeyboardButtonRow({
+                    buttons: [
+                        new Api.KeyboardButtonCallback({ text: '⚙️ 设置', data: Buffer.from('menu_settings') }),
+                        new Api.KeyboardButtonCallback({ text: '❓ 帮助', data: Buffer.from('menu_help') }),
+                    ],
+                }),
+            ],
+        }),
+    };
+}
+
+function buildSettingsMenu(): { text: string; buttons: Api.ReplyInlineMarkup } {
+    return {
+        text: [
+            '⚙️ **设置**',
+            '',
+            '点击任意项进行调整，每项都会显示当前值。',
+        ].join('\n'),
+        buttons: new Api.ReplyInlineMarkup({
+            rows: [
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '⚡ 单文件分片并发', data: Buffer.from('set_workers') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '📦 同时下载文件数', data: Buffer.from('set_files') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🧬 重复文件处理', data: Buffer.from('set_dup') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🧹 自动清理设置', data: Buffer.from('set_cleanup') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '📁 保存路径规则', data: Buffer.from('set_path') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '💾 切换存储源', data: Buffer.from('set_storage') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🏠 返回主菜单', data: Buffer.from('menu_home') })] }),
+            ],
+        }),
+    };
+}
+
+// 从回调查询构造一个最小的“消息代理”，让复用命令处理器（依赖 message.reply / senderId / chatId）在按钮场景下也能工作。
+function callbackMessageProxy(activeClient: TelegramClient, update: Api.UpdateBotCallbackQuery): any {
+    const entity = update.userId;
+    return {
+        chatId: update.userId,
+        senderId: update.userId,
+        reply: (params: any) => activeClient.sendMessage(entity, params),
+    };
+}
+
+async function handleMainMenuCallback(activeClient: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) {
+        await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    const proxy = callbackMessageProxy(activeClient, update);
+    const ack = (msg?: string) => activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, ...(msg ? { message: msg } : {}) }));
+
+    if (data === 'menu_home') {
+        const menu = buildMainMenu();
+        await activeClient.editMessage(update.peer, { message: update.msgId, text: menu.text, buttons: menu.buttons });
+        await ack();
+        return;
+    }
+    if (data === 'menu_settings') {
+        const settings = buildSettingsMenu();
+        await activeClient.editMessage(update.peer, { message: update.msgId, text: settings.text, buttons: settings.buttons });
+        await ack();
+        return;
+    }
+    if (data === 'menu_sub') { await ack('打开订阅管理'); await startTelegramWizard(proxy, userId, 'tg_sub_manage'); return; }
+    if (data === 'menu_download') { await ack('打开频道下载'); await startTelegramWizard(proxy, userId, 'tg_download'); return; }
+    if (data === 'menu_tasks') { await ack(); await handleTasks(proxy); return; }
+    if (data === 'menu_storage') { await ack(); await handleStorage(proxy); return; }
+    if (data === 'menu_help') { await ack(); await handleHelp(proxy); return; }
+}
+
+async function handleSettingsMenuCallback(activeClient: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) {
+        await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    const proxy = callbackMessageProxy(activeClient, update);
+    await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+    switch (data) {
+        case 'set_workers': await handleDownloadWorkers(proxy); return;
+        case 'set_files': await handleFileConcurrency(proxy); return;
+        case 'set_dup': await handleDuplicateMode(proxy); return;
+        case 'set_cleanup': await handleCleanupSettings(proxy); return;
+        case 'set_path': await handlePathRules(proxy); return;
+        case 'set_storage': await handleStorageSwitch(proxy); return;
+    }
+}
+
 const telegramWizardStates = new Map<number, TelegramWizardState>();
 
 // 频道/群组选择器状态（批量勾选）
@@ -1227,20 +1368,16 @@ export async function initTelegramBot(): Promise<void> {
                 langCode: 'zh',
                 commands: [
                     new Api.BotCommand({ command: 'start', description: '开始使用 / 验证身份' }),
-                    new Api.BotCommand({ command: 'path_rules', description: '保存路径/自定义目录' }),
+                    new Api.BotCommand({ command: 'menu', description: '主菜单（按钮式操作，无需记命令）' }),
                     new Api.BotCommand({ command: 'tg_sub', description: '订阅频道自动同步' }),
+                    new Api.BotCommand({ command: 'tg_download', description: '下载频道文件（按日期/标签）' }),
                     new Api.BotCommand({ command: 'tg_dialogs', description: '列出已加入的频道/群组 ID' }),
-                    new Api.BotCommand({ command: 'tg_download', description: '按日期/标签下载频道文件' }),
-                    new Api.BotCommand({ command: 'storage_switch', description: '切换已配置存储源' }),
-                    new Api.BotCommand({ command: 'download_workers', description: '设置单文件分片并发' }),
-                    new Api.BotCommand({ command: 'file_concurrency', description: '设置同时下载文件数' }),
-                    new Api.BotCommand({ command: 'duplicate_mode', description: '设置重复文件处理' }),
-                    new Api.BotCommand({ command: 'cleanup_settings', description: '设置自动清理开关' }),
-                    new Api.BotCommand({ command: 'storage', description: '查看存储统计/清理本地文件' }),
                     new Api.BotCommand({ command: 'tasks', description: '查看任务状态' }),
+                    new Api.BotCommand({ command: 'storage', description: '存储统计 / 清理本地文件' }),
+                    new Api.BotCommand({ command: 'settings', description: '设置（并发 / 去重 / 清理 / 路径 / 存储源）' }),
                     new Api.BotCommand({ command: 'setup_2fa', description: '配置双重验证 (2FA)' }),
                     new Api.BotCommand({ command: 'ytdlp', description: '解析并下载链接到存储源' }),
-                    new Api.BotCommand({ command: 'help', description: '显示预览帮助' }),
+                    new Api.BotCommand({ command: 'help', description: '显示完整帮助' }),
                 ]
             }));
             console.log('🤖 Bot 命令菜单已更新');
@@ -1336,8 +1473,36 @@ export async function initTelegramBot(): Promise<void> {
                             message: buildStartPrompt(),
                             buttons: generatePasswordKeyboard(0),
                         });
+                    } else {
+                        // 已认证用户：展示主菜单并挂载常驻快捷键盘
+                        const menu = buildMainMenu();
+                        await message.reply({ message: menu.text, buttons: menu.buttons });
+                        await message.reply({ message: '快捷操作已就绪 👇', buttons: buildQuickActionKeyboard() });
                     }
                     return;
+                }
+
+                // 主菜单 / 设置面板入口
+                if (text === '/menu' || text === QUICK_ACTIONS.menu) {
+                    if (!(await isAuthenticatedAsync(senderId))) { await message.reply({ message: MSG.AUTH_REQUIRED }); return; }
+                    const menu = buildMainMenu();
+                    await message.reply({ message: menu.text, buttons: menu.buttons });
+                    return;
+                }
+                if (text === '/settings' || text === '/setting') {
+                    if (!(await isAuthenticatedAsync(senderId))) { await message.reply({ message: MSG.AUTH_REQUIRED }); return; }
+                    const settings = buildSettingsMenu();
+                    await message.reply({ message: settings.text, buttons: settings.buttons });
+                    return;
+                }
+
+                // 常驻快捷键盘按钮 → 复用现有命令流程
+                if (QUICK_ACTION_VALUES.has(text)) {
+                    if (!(await isAuthenticatedAsync(senderId))) { await message.reply({ message: MSG.AUTH_REQUIRED }); return; }
+                    if (text === QUICK_ACTIONS.subscribe) { await startTelegramWizard(message, senderId, 'tg_sub_manage'); return; }
+                    if (text === QUICK_ACTIONS.download) { await startTelegramWizard(message, senderId, 'tg_download'); return; }
+                    if (text === QUICK_ACTIONS.tasks) { await handleTasks(message); return; }
+                    // QUICK_ACTIONS.menu handled above
                 }
                 // 处理 /setup-2fa 命令
                 if (text === '/setup_2fa' || text === '/setup-2fa') {
@@ -1929,6 +2094,18 @@ export async function initTelegramBot(): Promise<void> {
                 // 处理自动清理设置回调
                 if (data.startsWith('cs_')) {
                     await handleCleanupSettingsCallback(activeClient, callbackUpdate, data);
+                    return;
+                }
+
+                // 主菜单导航
+                if (data.startsWith('menu_')) {
+                    await handleMainMenuCallback(activeClient, callbackUpdate, data);
+                    return;
+                }
+
+                // 设置面板导航
+                if (data.startsWith('set_')) {
+                    await handleSettingsMenuCallback(activeClient, callbackUpdate, data);
                     return;
                 }
             }
