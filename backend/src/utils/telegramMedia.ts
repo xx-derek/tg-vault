@@ -78,6 +78,12 @@ export function getDownloadableMedia(message: Api.Message): any | null {
     if (!message.media) return null;
     const media: any = message.media;
     if (message.sticker) return null;
+    // 链接预览（MessageMediaWebPage）：只有内嵌了文档/图片才可下载，且必须返回内嵌对象，
+    // 否则会把整个 webpage 包装传给 iterDownload，触发 "Cannot cast MessageMediaWebPage"。
+    // 必须先于下面的便捷 getter 判断，因为 message.video/photo 等 getter 会穿透进 webpage。
+    if (media.className === 'MessageMediaWebPage') {
+        return media.webpage?.document || media.webpage?.photo || null;
+    }
     if (message.document || message.photo || message.video || message.audio || message.voice) {
         return message.media;
     }
