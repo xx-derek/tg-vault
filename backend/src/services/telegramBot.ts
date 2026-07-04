@@ -227,6 +227,41 @@ async function handleSettingsMenuCallback(activeClient: TelegramClient, update: 
     }
 }
 
+// 保存目录步骤的按钮：让用户无需输入文字即可继续（使用默认目录）或取消
+function buildPathStepKeyboard(): Api.ReplyInlineMarkup {
+    return new Api.ReplyInlineMarkup({
+        rows: [
+            new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '📁 使用默认目录', data: Buffer.from('tgw_path_skip') })] }),
+            new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '❌ 取消', data: Buffer.from('tgw_cancel') })] }),
+        ],
+    });
+}
+
+async function handleWizardCallback(activeClient: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) {
+        await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    if (data === 'tgw_cancel') {
+        telegramWizardStates.delete(userId);
+        await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消' }));
+        await activeClient.sendMessage(update.userId, { message: '已取消当前操作。' });
+        return;
+    }
+    if (data === 'tgw_path_skip') {
+        const state = telegramWizardStates.get(userId);
+        if (!state || state.step !== 'path') {
+            await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '该步骤已结束', alert: true }));
+            return;
+        }
+        await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '使用默认目录' }));
+        // 复用文字流程：等价于用户发送“跳过”
+        await handleTelegramWizardMessage(callbackMessageProxy(activeClient, update), userId, '跳过');
+        return;
+    }
+}
+
 const telegramWizardStates = new Map<number, TelegramWizardState>();
 
 // 频道/群组选择器状态（批量勾选）
@@ -386,11 +421,11 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '',
             `是否要给${scopeText}单独指定保存目录？`,
             '',
-            '直接发送目录，例如：`频道备份/壁纸`',
-            '发送 `跳过` / `skip` 使用默认保存路径规则。',
+            '💡 无需自定义目录时，直接点击下方「📁 使用默认目录」按钮即可继续。',
+            '如需自定义，直接发送目录，例如：`频道备份/壁纸`（也可发送 `跳过` / `skip`）。',
             '',
             `说明：这里设置的目录对${scopeText}统一生效，不会改变全局 /path_rules，也不会影响其它下载。`,
-            '发送“取消”可退出。',
+            '点击「❌ 取消」或发送“取消”可退出。',
         ].join('\n');
     }
 
@@ -601,11 +636,11 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
             }
 
             state.step = 'path';
-            await message.reply({ message: buildTelegramWizardPrompt(state) });
+            await message.reply({ message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
             return true;
         }
         state.step = 'path';
-        await message.reply({ message: buildTelegramWizardPrompt(state) });
+        await message.reply({ message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
         return true;
     }
 
@@ -1304,7 +1339,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             subscriptionSource: `已选 ${sources.length} 个频道/群组`,
         };
         telegramWizardStates.set(userId, state);
-        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state) });
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已选 ${sources.length} 个，请设置保存目录` }));
         return;
     }
@@ -1331,7 +1366,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             subscriptionSource: picked ? `${picked.title}（${addMatch[1]}）` : addMatch[1],
         };
         telegramWizardStates.set(userId, state);
-        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state) });
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请设置保存目录以完成订阅' }));
         return;
     }
@@ -1370,7 +1405,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             subscriptionSource: target.source,
         };
         telegramWizardStates.set(userId, state);
-        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state) });
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请发送新的专属目录' }));
         return;
     }
@@ -2214,6 +2249,12 @@ export async function initTelegramBot(): Promise<void> {
                 // 设置面板导航
                 if (data.startsWith('set_')) {
                     await handleSettingsMenuCallback(activeClient, callbackUpdate, data);
+                    return;
+                }
+
+                // 向导按钮（保存目录步骤：使用默认目录 / 取消）
+                if (data.startsWith('tgw_')) {
+                    await handleWizardCallback(activeClient, callbackUpdate, data);
                     return;
                 }
             }
