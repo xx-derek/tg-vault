@@ -21,6 +21,8 @@ export interface FileData {
     folder?: string;
     created_at: string;
     is_favorite?: boolean;
+    telegram_message_link?: string;
+    telegram_source_name?: string;
 }
 
 export interface StorageStats {

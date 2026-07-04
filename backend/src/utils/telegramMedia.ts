@@ -1,9 +1,77 @@
-import { Api } from 'telegram';
+import { Api, TelegramClient } from 'telegram';
 import { getMimeTypeFromFilename, sanitizeFilename } from './telegramUtils.js';
 
 export interface TelegramFileInfo {
     fileName: string;
     mimeType: string;
+}
+
+export interface TelegramMessageLink {
+    link: string;
+    chatName: string;
+}
+
+// Cache resolved chat info to avoid repeated getEntity calls during batch jobs
+interface CachedChatInfo {
+    username: string | null;
+    displayName: string | null;
+}
+const chatInfoCache = new Map<string, CachedChatInfo>();
+
+function getChatDisplayName(chat: any): string | null {
+    if (!chat) return null;
+    return chat.title
+        || [chat.firstName, chat.lastName].filter(Boolean).join(' ')
+        || chat.username
+        || null;
+}
+
+export async function buildTelegramMessageLink(
+    client: TelegramClient,
+    message: Api.Message,
+): Promise<TelegramMessageLink | null> {
+    try {
+        const chatId = message.chatId?.toString();
+        if (!chatId) return null;
+        const messageId = message.id;
+        if (!messageId) return null;
+
+        // Check cache first
+        if (chatInfoCache.has(chatId)) {
+            const cached = chatInfoCache.get(chatId)!;
+            return formatMessageLink(chatId, messageId, cached);
+        }
+
+        // Resolve the chat entity to get username and display name
+        const chat: any = await message.getChat().catch(() => null);
+        const username: string | undefined = chat?.username;
+        const displayName = getChatDisplayName(chat);
+
+        const cached: CachedChatInfo = { username: username || null, displayName };
+        chatInfoCache.set(chatId, cached);
+        return formatMessageLink(chatId, messageId, cached);
+    } catch {
+        return null;
+    }
+}
+
+function formatMessageLink(chatId: string, messageId: number, cached: CachedChatInfo): TelegramMessageLink | null {
+    if (cached.username) {
+        return {
+            link: `https://t.me/${cached.username}/${messageId}`,
+            chatName: cached.displayName || cached.username,
+        };
+    }
+    // Private channels/supergroups have IDs like -1001234567890
+    if (chatId.startsWith('-100')) {
+        const numericId = chatId.slice(4);
+        return {
+            link: `https://t.me/c/${numericId}/${messageId}`,
+            chatName: cached.displayName || numericId,
+        };
+    }
+    // Regular private chats - no link available
+    return null;
 }
 
 export function getDownloadableMedia(message: Api.Message): any | null {

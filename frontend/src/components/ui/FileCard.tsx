@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Download, Eye, FileText, Image as ImageIcon, Music, Video, Cloud, HardDrive, Database, Package, Network, Star, MoreVertical } from "lucide-react";
+import { Download, Eye, FileText, Image as ImageIcon, Music, Video, Cloud, HardDrive, Database, Package, Network, Star, MoreVertical, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
@@ -223,6 +223,18 @@ export const FileCard = ({
                             {file.name}
                         </h3>
                         <p className="text-xs text-muted-foreground">{file.size} • {file.date}</p>
+                        {file.telegram_message_link && (
+                            <a
+                                href={file.telegram_message_link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-0.5"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <ExternalLink className="h-3 w-3" />
+                                <span>{file.telegram_source_name ? `${file.telegram_source_name} · ${t('sourceMessage')}` : t('sourceMessage')}</span>
+                            </a>
+                        )}
                     </div>
                     {!isSelectionMode && (
                         <Button

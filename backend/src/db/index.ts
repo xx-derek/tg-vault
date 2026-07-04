@@ -102,6 +102,8 @@ async function initializeDatabase() {
         await ensureFavoritesColumn();
         await ensureFilesPerformanceIndexes();
         await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS preview_path VARCHAR(500)`);
+        await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_message_link TEXT`);
+        await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_source_name TEXT`);
         await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hash VARCHAR(64)`);
         await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash) WHERE key_hash IS NOT NULL`);
 

@@ -14,7 +14,7 @@ export async function getDuplicateMode(): Promise<DuplicateMode> {
 
 export async function findDuplicateFile(name: string, folder: string | null, size: number, storageAccountId: string | null) {
     const result = await query(
-        `SELECT id, name, path, folder, size, created_at
+        `SELECT id, name, path, folder, size, created_at, telegram_message_link, telegram_source_name
          FROM files
          WHERE name = $1
            AND folder IS NOT DISTINCT FROM $2

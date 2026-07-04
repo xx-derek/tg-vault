@@ -50,7 +50,8 @@
         "renameConfirm": "确认",
         "renameCancel": "取消",
         "renameExtHint": "文件后缀不可修改",
-        "move": "移动文件"
+        "move": "移动文件",
+        "sourceMessage": "原消息"
     },
     "folder": {
         "move": "移动文件夹"

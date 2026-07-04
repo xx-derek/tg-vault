@@ -1,12 +1,13 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { createPortal } from "react-dom";
-import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw } from "lucide-react";
+import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw, ExternalLink } from "lucide-react";
 import type { FileData } from "./FileCard";
 import { Button } from "./Button";
 import { useEffect, useRef, useState } from "react";
 import { fileApi } from "../../services/api";
 import { API_BASE } from "../../services/config";
 import { MobileMenu } from "./MobileMenu";
+import { useTranslation } from "react-i18next";
 
 interface PreviewModalProps {
     file: FileData | null;
@@ -93,6 +94,7 @@ const VideoPlayer = ({ file }: { file: FileData }) => {
 };
 
 export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNavigate }: PreviewModalProps) => {
+    const { t } = useTranslation();
     const [scale, setScale] = useState(1);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageError, setImageError] = useState(false);
@@ -314,7 +316,21 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                         <div className="flex items-center gap-3 min-w-0 flex-1">
                             <div className="text-white min-w-0">
                                 <h3 className="font-medium text-sm truncate max-w-[50vw]">{file.name}</h3>
-                                <p className="text-xs text-white/60">{file.size} • {file.date}</p>
+                                <p className="text-xs text-white/60">
+                                    {file.size} • {file.date}
+                                    {file.telegram_message_link && (
+                                        <a
+                                            href={file.telegram_message_link}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center gap-1 ml-2 text-primary hover:underline"
+                                            onClick={(e) => e.stopPropagation()}
+                                        >
+                                            <ExternalLink className="h-3 w-3" />
+                                            <span>{file.telegram_source_name ? `${file.telegram_source_name} · ${t('sourceMessage')}` : t('sourceMessage')}</span>
+                                        </a>
+                                    )}
+                                </p>
                             </div>
                         </div>
 

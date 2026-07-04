@@ -424,15 +424,16 @@ export function buildUploadFail(fileName: string, error: string): string {
     ].join('\n');
 }
 
-export function buildDuplicateSkipped(fileName: string, folder: string | null | undefined, existingId?: string): string {
+export function buildDuplicateSkipped(fileName: string, folder: string | null | undefined, existingId?: string, telegramMessageLink?: string | null, telegramSourceName?: string | null): string {
     return [
         `⏭️ **已跳过重复文件**`,
         ``,
         `📄 ${fileName}`,
         ...(folder ? [`📁 ${folder}`] : []),
         ...(existingId ? [`🆔 已存在: ${existingId.substring(0, 8)}`] : []),
+        ...(telegramMessageLink ? [``, `🔗 [${telegramSourceName ? `${telegramSourceName} · 查看原消息` : '查看原消息'}](${telegramMessageLink})`] : []),
         ``,
-        `如需保留副本，请发送 /duplicate_mode 切换为“生成副本”。`,
+        `如需保留副本，请发送 /duplicate_mode 切换为”生成副本”。`,
     ].join('\n');
 }
 

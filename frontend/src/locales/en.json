@@ -50,7 +50,8 @@
         "renameConfirm": "Confirm",
         "renameCancel": "Cancel",
         "renameExtHint": "File extension cannot be changed",
-        "move": "Move File"
+        "move": "Move File",
+        "sourceMessage": "Source message"
     },
     "folder": {
         "move": "Move Folder"

@@ -90,7 +90,8 @@ function parseRangeHeader(range: string | undefined, size: number): { start: num
 
 const FILES_LIST_COLUMNS = `
     id, name, stored_name, type, mime_type, size, thumbnail_path, preview_path,
-    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at
+    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at,
+    telegram_message_link, telegram_source_name
 `;
 
 type FileCursor = { createdAt: string; id: string };

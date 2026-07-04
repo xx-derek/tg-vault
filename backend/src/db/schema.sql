@@ -206,3 +206,6 @@ CREATE OR REPLACE TRIGGER telegram_download_items_updated_at
     BEFORE UPDATE ON telegram_download_items
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at();
+
+ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_message_link TEXT;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_source_name TEXT;

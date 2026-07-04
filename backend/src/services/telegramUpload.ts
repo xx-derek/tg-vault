@@ -11,7 +11,7 @@ import { getTelegramUserClient, isTelegramUserClientReady } from './telegramUser
 import { getSetting } from '../utils/settings.js';
 import { isAuthenticatedAsync } from './telegramState.js';
 import { formatBytes, getTypeEmoji, getFileType, sanitizeFilename } from '../utils/telegramUtils.js';
-import { extractFileInfo, getDownloadableMedia, getEstimatedFileSize, isTelegramPhotoMedia, type TelegramFileInfo } from '../utils/telegramMedia.js';
+import { extractFileInfo, getDownloadableMedia, getEstimatedFileSize, isTelegramPhotoMedia, buildTelegramMessageLink, type TelegramFileInfo } from '../utils/telegramMedia.js';
 import {
     MSG,
     buildUploadSuccess,
@@ -1491,10 +1491,12 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
                     throw err;
                 }
 
+                const msgLink = await buildTelegramMessageLink(client, file.message);
+
                 await query(`
-                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                `, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                `, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId, msgLink?.link || null, msgLink?.chatName || null]);
 
                 file.status = 'success';
                 file.size = actualSize;
@@ -2291,7 +2293,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                             await runStatusAction(chatId, async () => {
                                 await client.editMessage(chatId, {
                                     message: statusMsg!.id,
-                                    text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id),
+                                    text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id, duplicate.telegram_message_link, duplicate.telegram_source_name),
                                 });
                             });
                         }
@@ -2343,10 +2345,12 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     throw err;
                 }
 
+                const msgLink = await buildTelegramMessageLink(client, message);
+
                 await query(`
-                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId, msgLink?.link || null, msgLink?.chatName || null]);
 
                 updateUploadPhase(chatIdStr, uploadId, { phase: 'success', size: actualSize, providerName: provider.name, fileType, folder: storageFolder });
                 rememberTransferDestination(chatIdStr, storageFolder, provider.name);
