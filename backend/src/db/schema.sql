@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS telegram_background_jobs (
     chat_id BIGINT,
     kind VARCHAR(50) NOT NULL,
     source TEXT NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
     scan_status TEXT DEFAULT 'pending',
     download_status TEXT DEFAULT 'pending',
     scan_cursor JSONB DEFAULT '{}'::jsonb,
@@ -150,6 +150,17 @@ ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS scan_cursor JSONB 
 ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
 ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
 ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+-- status 需容纳 'completed_with_errors'(21 字符)，早期为 VARCHAR(20)，此处幂等扩宽
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'telegram_background_jobs' AND column_name = 'status'
+          AND character_maximum_length IS NOT NULL AND character_maximum_length < 32
+    ) THEN
+        ALTER TABLE telegram_background_jobs ALTER COLUMN status TYPE VARCHAR(32);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_pipeline ON telegram_background_jobs(status, scan_status, download_status);
 CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_cooldown ON telegram_background_jobs(cooldown_until);
 
@@ -172,7 +183,7 @@ CREATE TABLE IF NOT EXISTS telegram_download_items (
     mime_type TEXT,
     total_size BIGINT DEFAULT 0,
     folder_override TEXT,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
     attempts INT DEFAULT 0,
     error TEXT,
     last_error TEXT,
@@ -194,6 +205,17 @@ ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS attempts INT DEFAUL
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS last_error TEXT;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+-- status 同样需容纳 'completed_with_errors'，幂等扩宽早期的 VARCHAR(20)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'telegram_download_items' AND column_name = 'status'
+          AND character_maximum_length IS NOT NULL AND character_maximum_length < 32
+    ) THEN
+        ALTER TABLE telegram_download_items ALTER COLUMN status TYPE VARCHAR(32);
+    END IF;
+END $$;
 UPDATE telegram_download_items SET source_peer = COALESCE(source_peer, source) WHERE source_peer IS NULL;
 ALTER TABLE telegram_download_items DROP CONSTRAINT IF EXISTS telegram_download_items_job_id_message_id_key;
 
