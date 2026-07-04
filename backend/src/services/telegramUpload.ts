@@ -9,7 +9,8 @@ import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
 import { storageManager } from '../services/storage.js';
 import { getTelegramUserClient, isTelegramUserClientReady } from './telegramUserClient.js';
 import { getSetting } from '../utils/settings.js';
-import { isAuthenticatedAsync } from './telegramState.js';
+import { isAuthenticatedAsync, cookieEntryState } from './telegramState.js';
+import { setCookiesForHost, looksLikeCookies, YTDLP_COOKIE_MAX_BYTES } from '../utils/ytdlpCookies.js';
 import { formatBytes, getTypeEmoji, getFileType, sanitizeFilename } from '../utils/telegramUtils.js';
 import { extractFileInfo, getDownloadableMedia, getEstimatedFileSize, isTelegramPhotoMedia, buildTelegramMessageLink, type TelegramFileInfo } from '../utils/telegramMedia.js';
 import {
@@ -2081,6 +2082,53 @@ export async function downloadTelegramChannelRange(
     };
 }
 
+// 处理 yt-dlp 登录 Cookie 配置时上传的 cookies.txt 文件
+async function handleCookieDocumentUpload(client: TelegramClient, message: Api.Message, senderId: number, host: string): Promise<void> {
+    const media: any = message.media;
+    const isDocument = media && (media.className === 'MessageMediaDocument' || media.document);
+    if (!isDocument) {
+        await message.reply({ message: '❌ 请以“文件”形式上传导出的 `cookies.txt`（不要作为图片发送）。' });
+        return;
+    }
+    const estimated = getEstimatedFileSize(message);
+    if (estimated && estimated > YTDLP_COOKIE_MAX_BYTES) {
+        await message.reply({ message: '❌ 文件过大，cookies.txt 通常只有几 KB，请确认上传的是 Cookie 文件。' });
+        return;
+    }
+
+    // 下载到临时文件，再读回内容。复用常规上传的下载链路（resolveDownloadSource +
+    // downloadAndSaveFile）：开启用户账号下载时会通过 user client 拉取，直接用 bot client
+    // 的 iterDownload/downloadMedia 会得到 0 字节。
+    let savedPath: string | null = null;
+    const cookieTmpDir = path.join(UPLOAD_DIR, 'cookie-tmp');
+    try {
+        const downloadSource = await resolveDownloadSource(client, message);
+        const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, `cookies-${crypto.randomUUID()}.txt`, cookieTmpDir);
+        if (!result) {
+            throw new Error('下载未生成文件');
+        }
+        savedPath = result.filePath;
+        if (!result.actualSize) {
+            throw new Error('文件为空');
+        }
+        if (result.actualSize > YTDLP_COOKIE_MAX_BYTES) {
+            await message.reply({ message: '❌ 文件过大，请确认上传的是 cookies.txt。' });
+            return;
+        }
+        const content = fs.readFileSync(savedPath, 'utf8');
+        await setCookiesForHost(host, content);
+        cookieEntryState.delete(senderId);
+        const warn = looksLikeCookies(content) ? '' : '\n\n⚠️ 内容看起来不像标准 cookies.txt，若下载仍失败，请重新导出 Netscape 格式。';
+        await message.reply({ message: `✅ 已保存 \`${host}\` 的 Cookie（来自上传文件）。${warn}\n\n发送 /ytdlp_cookies 可查看或管理。` });
+    } catch (e) {
+        cookieEntryState.delete(senderId);
+        console.error('🍪 保存上传的 cookies 失败:', e);
+        await message.reply({ message: `❌ 保存 Cookie 失败：${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+        try { if (savedPath && fs.existsSync(savedPath)) fs.unlinkSync(savedPath); } catch { }
+    }
+}
+
 // Main handler for file uploads
 export async function handleFileUpload(client: TelegramClient, event: NewMessageEvent): Promise<void> {
     const message = event.message;
@@ -2089,6 +2137,14 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
 
     if (!(await isAuthenticatedAsync(senderId))) {
         await message.reply({ message: MSG.AUTH_REQUIRED_UPLOAD });
+        return;
+    }
+
+    // 若用户正在配置 yt-dlp 登录 Cookie（等待上传 cookies.txt），把该文件当作 Cookie 内容处理，
+    // 不走常规存储/入库流程。
+    const cookieEntry = cookieEntryState.get(senderId);
+    if (cookieEntry && cookieEntry.step === 'value' && cookieEntry.host) {
+        await handleCookieDocumentUpload(client, message, senderId, cookieEntry.host);
         return;
     }
 

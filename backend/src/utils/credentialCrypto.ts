@@ -17,6 +17,7 @@ const SENSITIVE_SETTING_KEYS = new Set([
     'google_drive_refresh_token',
     'admin_password_hash',
     'telegram_pin_hash',
+    'ytdlp_cookies',
 ]);
 
 function getCredentialSecret(): string {

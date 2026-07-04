@@ -92,6 +92,8 @@ async function initializeDatabase() {
     await ensureFavoritesColumn();
     await ensureFilesPerformanceIndexes();
     await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS preview_path VARCHAR(500)`);
+    await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_message_link TEXT`);
+    await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_source_name TEXT`);
     await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hash VARCHAR(64)`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash) WHERE key_hash IS NOT NULL`);
     console.log("\u2705 \u6570\u636E\u5E93\u8868\u7ED3\u6784\u521D\u59CB\u5316\u5B8C\u6210");
@@ -300,7 +302,8 @@ var init_credentialCrypto = __esm({
       "google_drive_client_secret",
       "google_drive_refresh_token",
       "admin_password_hash",
-      "telegram_pin_hash"
+      "telegram_pin_hash",
+      "ytdlp_cookies"
     ]);
   }
 });
@@ -1805,7 +1808,7 @@ import axios2 from "axios";
 
 // src/services/telegramBot.ts
 init_storage();
-import { TelegramClient as TelegramClient4, Api as Api6 } from "telegram";
+import { TelegramClient as TelegramClient5, Api as Api6 } from "telegram";
 import { StringSession as StringSession2 } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/index.js";
@@ -1908,6 +1911,7 @@ async function getConfiguredTelegramAllowedUsers() {
 var userStates = /* @__PURE__ */ new Map();
 var authenticatedUsers = /* @__PURE__ */ new Map();
 var passwordInputState = /* @__PURE__ */ new Map();
+var cookieEntryState = /* @__PURE__ */ new Map();
 async function revokeAuthenticatedUser(userId) {
   authenticatedUsers.delete(userId);
   try {
@@ -1949,6 +1953,123 @@ async function isAuthenticatedAsync(userId) {
     return false;
   }
   return authenticatedUsers.has(userId);
+}
+
+// src/utils/ytdlpCookies.ts
+var COOKIE_SETTING_KEY = "ytdlp_cookies";
+var YTDLP_COOKIE_MAX_BYTES = 256 * 1024;
+var DOMAIN_ALIASES = [
+  ["x.com", "twitter.com"]
+];
+function expandHostAliases(host) {
+  const out = /* @__PURE__ */ new Set([host]);
+  for (const group of DOMAIN_ALIASES) {
+    for (const base of group) {
+      if (host === base || host.endsWith(`.${base}`)) {
+        const prefix = host.slice(0, host.length - base.length);
+        for (const sibling of group) out.add(prefix + sibling);
+      }
+    }
+  }
+  return [...out];
+}
+function normalizeCookieHost(input) {
+  let raw = (input || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw.includes("://")) {
+    try {
+      raw = new URL(raw).hostname;
+    } catch {
+      raw = raw.split("://")[1] || raw;
+    }
+  }
+  raw = raw.split("/")[0].split("@").pop() || raw;
+  raw = raw.split(":")[0];
+  raw = raw.toLowerCase().replace(/[^a-z0-9.-]/g, "");
+  raw = raw.replace(/^\.+/, "").replace(/\.+$/, "");
+  if (raw.startsWith("www.")) raw = raw.slice(4);
+  return raw.trim();
+}
+function hostFromUrl(url) {
+  try {
+    let host = new URL(url).hostname.toLowerCase();
+    if (host.startsWith("www.")) host = host.slice(4);
+    return host;
+  } catch {
+    return "";
+  }
+}
+async function getCookieStore() {
+  const raw = await getSetting(COOKIE_SETTING_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+async function saveCookieStore(store) {
+  await setSetting(COOKIE_SETTING_KEY, JSON.stringify(store));
+}
+async function listCookieHosts() {
+  const store = await getCookieStore();
+  return Object.keys(store).sort();
+}
+async function listCookieHostSummaries() {
+  const store = await getCookieStore();
+  return Object.keys(store).sort().map((host) => ({
+    host,
+    bytes: Buffer.byteLength(store[host] || "", "utf8")
+  }));
+}
+async function setCookiesForHost(host, cookiesText) {
+  const normalized = normalizeCookieHost(host);
+  if (!normalized) throw new Error("\u65E0\u6548\u7684\u7F51\u7AD9\u57DF\u540D");
+  if (!cookiesText || !cookiesText.trim()) throw new Error("Cookie \u5185\u5BB9\u4E3A\u7A7A");
+  const store = await getCookieStore();
+  store[normalized] = cookiesText;
+  await saveCookieStore(store);
+}
+async function deleteCookiesForHost(host) {
+  const normalized = normalizeCookieHost(host);
+  const store = await getCookieStore();
+  if (!(normalized in store)) return false;
+  delete store[normalized];
+  await saveCookieStore(store);
+  return true;
+}
+async function getCookiesForUrl(url) {
+  const host = hostFromUrl(url);
+  if (!host) return null;
+  const store = await getCookieStore();
+  const hosts = Object.keys(store);
+  const bestMatch = (candidates) => {
+    let best = null;
+    for (const stored of hosts) {
+      for (const cand of candidates) {
+        if (cand === stored || cand.endsWith(`.${stored}`)) {
+          if (!best || stored.length > best.length) best = stored;
+          break;
+        }
+      }
+    }
+    return best;
+  };
+  const direct = bestMatch([host]);
+  const chosen = direct ?? bestMatch(expandHostAliases(host));
+  if (!chosen) return null;
+  const value = store[chosen];
+  return value && value.trim() ? value : null;
+}
+function looksLikeCookies(text) {
+  if (!text) return false;
+  if (text.includes("# Netscape HTTP Cookie File") || text.includes("# HTTP Cookie File")) return true;
+  return text.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return false;
+    return trimmed.split("	").length >= 6;
+  });
 }
 
 // src/services/telegramCommands.ts
@@ -2229,31 +2350,47 @@ function buildHelp() {
     `  \u652F\u6301\u6240\u6709\u7C7B\u578B\uFF0C\u6700\u5927 2 GB\uFF0C\u8D26\u53F7\u7EA7\u4E0B\u8F7D\u5668\u4E0D\u53D7\u6B64\u9650\u5236`,
     `  \u591A\u6587\u4EF6\u540C\u65F6\u53D1\u9001\u4F1A\u81EA\u52A8\u5F52\u4E3A\u4E00\u7EC4`,
     ``,
-    `**\u{1F6E0} \u53EF\u7528\u547D\u4EE4**`,
-    `  /start \u2014 \u8EAB\u4EFD\u8BA4\u8BC1 / \u5F00\u59CB\u4F7F\u7528`,
-    `  /setup\\_2fa \u2014 \u914D\u7F6E\u53CC\u91CD\u9A8C\u8BC1 (TOTP)`,
+    `**\u2B50 \u63A8\u8350\u7528\u6CD5**`,
+    `  /menu \u2014 \u4E3B\u83DC\u5355\uFF0C\u6309\u94AE\u5F0F\u64CD\u4F5C\uFF0C\u6DB5\u76D6\u8BA2\u9605 / \u4E0B\u8F7D / \u4EFB\u52A1 / \u5B58\u50A8 / \u8BBE\u7F6E / \u5E2E\u52A9`,
+    `  \u8F93\u5165\u6846\u4E0A\u65B9\u5E38\u9A7B\u5FEB\u6377\u952E\u76D8\u53EF\u4E00\u952E\u8BA2\u9605 / \u4E0B\u8F7D / \u67E5\u770B\u4EFB\u52A1`,
+    `  \u4E0B\u65B9\u547D\u4EE4\u5747\u53EF\u76F4\u63A5\u8F93\u5165\uFF0C\u591A\u6570\u4E5F\u80FD\u5728 /menu \u91CC\u70B9\u6309\u5B8C\u6210`,
+    ``,
+    `**\u{1F4E1} \u9891\u9053\u8BA2\u9605\u4E0E\u4E0B\u8F7D**`,
+    `  /tg_sub [\u9891\u9053] \u2014 \u8BA2\u9605\u9891\u9053\u65B0\u6587\u4EF6\u81EA\u52A8\u540C\u6B65\uFF08\u65E0\u53C2\u6570\u8FDB\u5165\u7BA1\u7406\u9762\u677F\uFF09`,
+    `  /tg_dialogs [\u5173\u952E\u8BCD] \u2014 \u5217\u51FA\u5DF2\u52A0\u5165\u7684\u9891\u9053/\u7FA4\u7EC4 ID\uFF08\u8BA2\u9605\u79C1\u5BC6\u6765\u6E90\u65F6\u4F7F\u7528\uFF09`,
+    `  /tg_download \u2014 \u6309\u65E5\u671F/\u6807\u7B7E\u4E0B\u8F7D\u9891\u9053\u6587\u4EF6\uFF08\u5411\u5BFC\u5F0F\uFF09`,
+    `  /tg_download date <\u9891\u9053> <\u5F00\u59CB\u65E5\u671F> <\u7ED3\u675F\u65E5\u671F> \u2014 \u6309\u65E5\u671F\u4E0B\u8F7D`,
+    `  /tg_download tag <\u9891\u9053> <#\u6807\u7B7E> \u2014 \u6309\u6807\u7B7E\u4E0B\u8F7D`,
+    `  \u5411\u5BFC\u4E2D\u53EF\u9009\u62E9\u201C\u9891\u9053 + \u8BC4\u8BBA\u533A\u201D\uFF1B\u5F00\u542F\u540E\u53EA\u4E0B\u8F7D\u8BC4\u8BBA\u533A\u91CC\u7684\u6587\u4EF6/\u56FE\u7247/\u89C6\u9891/\u97F3\u9891\uFF0C\u6587\u5B57\u8BC4\u8BBA\u4F1A\u5FFD\u7565`,
+    `  \u8BC4\u8BBA\u533A\u6BCF\u4E2A\u5E16\u5B50\u9ED8\u8BA4\u6700\u591A\u626B\u63CF ${process.env.TELEGRAM_COMMENTS_MAX_PER_POST || "200"} \u6761\u8BC4\u8BBA\uFF0C\u53EF\u7528 TELEGRAM_COMMENTS_MAX_PER_POST \u8C03\u6574`,
+    ``,
+    `**\u2699\uFE0F \u8BBE\u7F6E**\uFF08\u4E5F\u53EF\u5728 /menu \u2192 \u8BBE\u7F6E \u4E2D\u70B9\u6309\uFF09`,
+    `  /settings \u2014 \u8BBE\u7F6E\u9762\u677F\u5165\u53E3`,
+    `  /download_workers \u2014 \u5355\u6587\u4EF6\u5206\u7247\u5E76\u53D1`,
+    `  /file_concurrency \u2014 \u540C\u65F6\u4E0B\u8F7D\u6587\u4EF6\u6570`,
+    `  /duplicate_mode \u2014 \u91CD\u590D\u6587\u4EF6\u5904\u7406`,
+    `  /cleanup_settings \u2014 \u81EA\u52A8\u6E05\u7406\u5F00\u5173`,
+    ``,
+    `**\u{1F4C1} \u4FDD\u5B58\u8DEF\u5F84**`,
     `  /path_rules \u2014 \u4FDD\u5B58\u8DEF\u5F84/\u81EA\u5B9A\u4E49\u76EE\u5F55\u9762\u677F`,
     `  /p <\u76EE\u5F55> \u2014 \u4E0B\u4E00\u6B21\u4E0B\u8F7D\u4FDD\u5B58\u5230\u6307\u5B9A\u76EE\u5F55`,
     `  /ps <\u76EE\u5F55> \u2014 \u672C\u4F1A\u8BDD\u6301\u7EED\u4FDD\u5B58\u5230\u6307\u5B9A\u76EE\u5F55`,
     `  /pc \u2014 \u6E05\u9664\u81EA\u5B9A\u4E49\u76EE\u5F55`,
-    `  /tg_sub <\u9891\u9053> \u2014 \u8BA2\u9605\u9891\u9053\u65B0\u6587\u4EF6\u81EA\u52A8\u540C\u6B65`,
-    `  /tg_download \u2014 \u6309\u65E5\u671F/\u6807\u7B7E\u4E0B\u8F7D\u9891\u9053\u6587\u4EF6`,
-    `  /tg_download date <\u9891\u9053> <\u5F00\u59CB\u65E5\u671F> <\u7ED3\u675F\u65E5\u671F> \u2014 \u6309\u65E5\u671F\u4E0B\u8F7D`,
-    `  /tg_download tag <\u9891\u9053> <#\u6807\u7B7E> \u2014 \u6309\u6807\u7B7E\u4E0B\u8F7D`,
-    `  /tg_download \u5411\u5BFC\u4E2D\u53EF\u9009\u62E9\u201C\u9891\u9053 + \u8BC4\u8BBA\u533A\u201D\uFF1B\u5F00\u542F\u540E\u53EA\u4E0B\u8F7D\u8BC4\u8BBA\u533A\u91CC\u7684\u6587\u4EF6/\u56FE\u7247/\u89C6\u9891/\u97F3\u9891\uFF0C\u6587\u5B57\u8BC4\u8BBA\u4F1A\u5FFD\u7565`,
-    `  \u8BC4\u8BBA\u533A\u6BCF\u4E2A\u5E16\u5B50\u9ED8\u8BA4\u6700\u591A\u626B\u63CF ${process.env.TELEGRAM_COMMENTS_MAX_PER_POST || "200"} \u6761\u8BC4\u8BBA\uFF0C\u53EF\u7528 TELEGRAM_COMMENTS_MAX_PER_POST \u8C03\u6574`,
-    `  /download_workers \u2014 \u8BBE\u7F6E\u5355\u6587\u4EF6\u5206\u7247\u5E76\u53D1`,
-    `  /file_concurrency \u2014 \u8BBE\u7F6E\u540C\u65F6\u4E0B\u8F7D\u6587\u4EF6\u6570`,
-    `  /duplicate_mode \u2014 \u8BBE\u7F6E\u91CD\u590D\u6587\u4EF6\u5904\u7406`,
-    `  /cleanup_settings \u2014 \u8BBE\u7F6E\u81EA\u52A8\u6E05\u7406\u5F00\u5173`,
-    `  /storage \u2014 \u5B58\u50A8\u7EDF\u8BA1/\u6E05\u7406\u672C\u5730\u6587\u4EF6`,
+    ``,
+    `**\u{1F5C2} \u5B58\u50A8\u4E0E\u4EFB\u52A1**`,
+    `  /storage \u2014 \u5B58\u50A8\u7EDF\u8BA1 / \u6E05\u7406\u672C\u5730\u6587\u4EF6\uFF08\u542B\u5207\u6362\u5B58\u50A8\u6E90\uFF09`,
     `  /tasks \u2014 \u5B9E\u65F6\u4F20\u8F93\u4EFB\u52A1\u961F\u5217`,
-    `  /ytdlp <url> \u2014 \u4E0B\u8F7D\u89C6\u9891\u94FE\u63A5\u5230\u5B58\u50A8`,
     `  /delete <ID\u6216\u5E8F\u53F7> \u2014 \u5220\u9664\u6307\u5B9A\u6587\u4EF6`,
+    `  /ytdlp <url> \u2014 \u4E0B\u8F7D\u89C6\u9891\u94FE\u63A5\u5230\u5B58\u50A8`,
+    `  /ytdlp\\_cookies \u2014 \u914D\u7F6E\u5404\u7F51\u7AD9\u767B\u5F55 Cookie\uFF08\u4E0B\u8F7D\u4F1A\u5458/\u4ED8\u8D39/\u79C1\u5BC6\u5185\u5BB9\uFF09`,
+    ``,
+    `**\u{1F510} \u8D26\u6237**`,
+    `  /start \u2014 \u8EAB\u4EFD\u8BA4\u8BC1 / \u5F00\u59CB\u4F7F\u7528`,
+    `  /setup\\_2fa \u2014 \u914D\u7F6E\u53CC\u91CD\u9A8C\u8BC1 (TOTP)`,
     `  /help \u2014 \u663E\u793A\u6B64\u5E2E\u52A9`,
     ``,
     LINE,
-    `\u{1F4A1} **\u63D0\u793A**\uFF1A\u8F6C\u53D1\u6587\u4EF6\u7ED9 Bot \u5373\u53EF\u5F00\u59CB\u4E0A\u4F20`
+    `\u{1F4A1} **\u63D0\u793A**\uFF1A\u8F6C\u53D1\u6587\u4EF6\u7ED9 Bot \u5373\u53EF\u5F00\u59CB\u4E0A\u4F20\uFF1B\u65E5\u5E38\u64CD\u4F5C\u63A8\u8350\u7528 /menu`
   ].join("\n");
 }
 function build2FASetupCaption() {
@@ -2348,15 +2485,16 @@ function buildUploadFail(fileName, error) {
     `\u{1F4A1} \u53EF\u91CD\u65B0\u53D1\u9001\u8BE5\u6587\u4EF6\uFF0C\u6216\u7528 /download_workers \u964D\u4F4E\u5E76\u53D1\u540E\u518D\u8BD5\u3002`
   ].join("\n");
 }
-function buildDuplicateSkipped(fileName, folder, existingId) {
+function buildDuplicateSkipped(fileName, folder, existingId, telegramMessageLink, telegramSourceName) {
   return [
     `\u23ED\uFE0F **\u5DF2\u8DF3\u8FC7\u91CD\u590D\u6587\u4EF6**`,
     ``,
     `\u{1F4C4} ${fileName}`,
     ...folder ? [`\u{1F4C1} ${folder}`] : [],
     ...existingId ? [`\u{1F194} \u5DF2\u5B58\u5728: ${existingId.substring(0, 8)}`] : [],
+    ...telegramMessageLink ? [``, `\u{1F517} [${telegramSourceName ? `${telegramSourceName} \xB7 \u67E5\u770B\u539F\u6D88\u606F` : "\u67E5\u770B\u539F\u6D88\u606F"}](${telegramMessageLink})`] : [],
     ``,
-    `\u5982\u9700\u4FDD\u7559\u526F\u672C\uFF0C\u8BF7\u53D1\u9001 /duplicate_mode \u5207\u6362\u4E3A\u201C\u751F\u6210\u526F\u672C\u201D\u3002`
+    `\u5982\u9700\u4FDD\u7559\u526F\u672C\uFF0C\u8BF7\u53D1\u9001 /duplicate_mode \u5207\u6362\u4E3A\u201D\u751F\u6210\u526F\u672C\u201D\u3002`
   ].join("\n");
 }
 function buildDownloadProgress(fileName, downloaded, total, typeEmoji, startTime) {
@@ -2910,10 +3048,54 @@ function getTelegramUserSessionFilePath() {
 
 // src/utils/telegramMedia.ts
 import { Api as Api2 } from "telegram";
+var chatInfoCache = /* @__PURE__ */ new Map();
+function getChatDisplayName(chat) {
+  if (!chat) return null;
+  return chat.title || [chat.firstName, chat.lastName].filter(Boolean).join(" ") || chat.username || null;
+}
+async function buildTelegramMessageLink(client2, message) {
+  try {
+    const chatId = message.chatId?.toString();
+    if (!chatId) return null;
+    const messageId = message.id;
+    if (!messageId) return null;
+    if (chatInfoCache.has(chatId)) {
+      const cached2 = chatInfoCache.get(chatId);
+      return formatMessageLink(chatId, messageId, cached2);
+    }
+    const chat = await message.getChat().catch(() => null);
+    const username = chat?.username;
+    const displayName = getChatDisplayName(chat);
+    const cached = { username: username || null, displayName };
+    chatInfoCache.set(chatId, cached);
+    return formatMessageLink(chatId, messageId, cached);
+  } catch {
+    return null;
+  }
+}
+function formatMessageLink(chatId, messageId, cached) {
+  if (cached.username) {
+    return {
+      link: `https://t.me/${cached.username}/${messageId}`,
+      chatName: cached.displayName || cached.username
+    };
+  }
+  if (chatId.startsWith("-100")) {
+    const numericId = chatId.slice(4);
+    return {
+      link: `https://t.me/c/${numericId}/${messageId}`,
+      chatName: cached.displayName || numericId
+    };
+  }
+  return null;
+}
 function getDownloadableMedia(message) {
   if (!message.media) return null;
   const media = message.media;
   if (message.sticker) return null;
+  if (media.className === "MessageMediaWebPage") {
+    return media.webpage?.document || media.webpage?.photo || null;
+  }
   if (message.document || message.photo || message.video || message.audio || message.voice) {
     return message.media;
   }
@@ -3399,7 +3581,7 @@ async function getDuplicateMode() {
 }
 async function findDuplicateFile(name, folder, size, storageAccountId) {
   const result = await query(
-    `SELECT id, name, path, folder, size, created_at
+    `SELECT id, name, path, folder, size, created_at, telegram_message_link, telegram_source_name
          FROM files
          WHERE name = $1
            AND folder IS NOT DISTINCT FROM $2
@@ -4490,10 +4672,11 @@ async function processFileUpload(client2, file, queue) {
           console.error("\u4FDD\u5B58\u6587\u4EF6\u5230\u5B58\u50A8\u63D0\u4F9B\u5546\u5931\u8D25:", err);
           throw err;
         }
+        const msgLink = await buildTelegramMessageLink(downloadSource.client, downloadSource.message);
         await query(`
-                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                `, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                `, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId, msgLink?.link || null, msgLink?.chatName || null]);
         file.status = "success";
         file.size = actualSize;
         file.fileType = fileType;
@@ -4935,12 +5118,63 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
     lastId: ids[ids.length - 1]
   };
 }
+async function handleCookieDocumentUpload(client2, message, senderId, host) {
+  const media = message.media;
+  const isDocument = media && (media.className === "MessageMediaDocument" || media.document);
+  if (!isDocument) {
+    await message.reply({ message: "\u274C \u8BF7\u4EE5\u201C\u6587\u4EF6\u201D\u5F62\u5F0F\u4E0A\u4F20\u5BFC\u51FA\u7684 `cookies.txt`\uFF08\u4E0D\u8981\u4F5C\u4E3A\u56FE\u7247\u53D1\u9001\uFF09\u3002" });
+    return;
+  }
+  const estimated = getEstimatedFileSize(message);
+  if (estimated && estimated > YTDLP_COOKIE_MAX_BYTES) {
+    await message.reply({ message: "\u274C \u6587\u4EF6\u8FC7\u5927\uFF0Ccookies.txt \u901A\u5E38\u53EA\u6709\u51E0 KB\uFF0C\u8BF7\u786E\u8BA4\u4E0A\u4F20\u7684\u662F Cookie \u6587\u4EF6\u3002" });
+    return;
+  }
+  let savedPath = null;
+  const cookieTmpDir = path10.join(UPLOAD_DIR, "cookie-tmp");
+  try {
+    const downloadSource = await resolveDownloadSource(client2, message);
+    const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, `cookies-${crypto6.randomUUID()}.txt`, cookieTmpDir);
+    if (!result) {
+      throw new Error("\u4E0B\u8F7D\u672A\u751F\u6210\u6587\u4EF6");
+    }
+    savedPath = result.filePath;
+    if (!result.actualSize) {
+      throw new Error("\u6587\u4EF6\u4E3A\u7A7A");
+    }
+    if (result.actualSize > YTDLP_COOKIE_MAX_BYTES) {
+      await message.reply({ message: "\u274C \u6587\u4EF6\u8FC7\u5927\uFF0C\u8BF7\u786E\u8BA4\u4E0A\u4F20\u7684\u662F cookies.txt\u3002" });
+      return;
+    }
+    const content = fs7.readFileSync(savedPath, "utf8");
+    await setCookiesForHost(host, content);
+    cookieEntryState.delete(senderId);
+    const warn = looksLikeCookies(content) ? "" : "\n\n\u26A0\uFE0F \u5185\u5BB9\u770B\u8D77\u6765\u4E0D\u50CF\u6807\u51C6 cookies.txt\uFF0C\u82E5\u4E0B\u8F7D\u4ECD\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u5BFC\u51FA Netscape \u683C\u5F0F\u3002";
+    await message.reply({ message: `\u2705 \u5DF2\u4FDD\u5B58 \`${host}\` \u7684 Cookie\uFF08\u6765\u81EA\u4E0A\u4F20\u6587\u4EF6\uFF09\u3002${warn}
+
+\u53D1\u9001 /ytdlp_cookies \u53EF\u67E5\u770B\u6216\u7BA1\u7406\u3002` });
+  } catch (e) {
+    cookieEntryState.delete(senderId);
+    console.error("\u{1F36A} \u4FDD\u5B58\u4E0A\u4F20\u7684 cookies \u5931\u8D25:", e);
+    await message.reply({ message: `\u274C \u4FDD\u5B58 Cookie \u5931\u8D25\uFF1A${e instanceof Error ? e.message : String(e)}` });
+  } finally {
+    try {
+      if (savedPath && fs7.existsSync(savedPath)) fs7.unlinkSync(savedPath);
+    } catch {
+    }
+  }
+}
 async function handleFileUpload(client2, event) {
   const message = event.message;
   const senderId = message.senderId?.toJSNumber();
   if (!senderId) return;
   if (!await isAuthenticatedAsync(senderId)) {
     await message.reply({ message: MSG.AUTH_REQUIRED_UPLOAD });
+    return;
+  }
+  const cookieEntry = cookieEntryState.get(senderId);
+  if (cookieEntry && cookieEntry.step === "value" && cookieEntry.host) {
+    await handleCookieDocumentUpload(client2, message, senderId, cookieEntry.host);
     return;
   }
   const fileInfo = extractFileInfo(message);
@@ -5125,7 +5359,7 @@ async function handleFileUpload(client2, event) {
               await runStatusAction(chatId, async () => {
                 await client2.editMessage(chatId, {
                   message: statusMsg.id,
-                  text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id)
+                  text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id, duplicate.telegram_message_link, duplicate.telegram_source_name)
                 });
               });
             }
@@ -5172,10 +5406,11 @@ async function handleFileUpload(client2, event) {
           lastError = err.message;
           throw err;
         }
+        const msgLink = await buildTelegramMessageLink(client2, message);
         await query(`
-                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId, msgLink?.link || null, msgLink?.chatName || null]);
         updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType, folder: storageFolder });
         rememberTransferDestination(chatIdStr, storageFolder, provider.name);
         if (useConsolidated()) {
@@ -5305,28 +5540,6 @@ var TELEGRAM_COMMENTS_MAX_PER_POST = Math.max(1, parseInt(process.env.TELEGRAM_C
 var subscriptionTimer = null;
 var recoveryStarted = false;
 var recoveryRunning = false;
-function parseTelegramSourceAllowlist(raw) {
-  return (raw || "").split(",").map((item) => item.trim()).filter(Boolean).map((item) => normalizeSource(item).toLowerCase());
-}
-async function getTelegramSourceAllowlist() {
-  const envList = parseTelegramSourceAllowlist(process.env.TELEGRAM_ALLOWED_SOURCES || process.env.TELEGRAM_SOURCE_ALLOWLIST || "");
-  if (envList.length > 0) return envList;
-  const stored = await getSetting("telegram_allowed_sources", "");
-  return parseTelegramSourceAllowlist(stored || "");
-}
-async function assertTelegramSourceAllowed(source) {
-  const normalized = normalizeSource(source).toLowerCase();
-  const allowlist = await getTelegramSourceAllowlist();
-  if (allowlist.length === 0) {
-    if (/^-?\d+$/.test(normalized)) {
-      throw new Error("\u672A\u914D\u7F6E Telegram \u6765\u6E90\u767D\u540D\u5355\uFF0C\u7981\u6B62\u4F7F\u7528\u6570\u5B57 ID/\u79C1\u804A/\u79C1\u5BC6\u7FA4\u7EC4\u6765\u6E90\u3002\u8BF7\u914D\u7F6E TELEGRAM_ALLOWED_SOURCES\u3002");
-    }
-    return;
-  }
-  if (!allowlist.includes(normalized)) {
-    throw new Error(`\u6765\u6E90 ${source} \u4E0D\u5728 Telegram \u4E0B\u8F7D\u767D\u540D\u5355\u4E2D`);
-  }
-}
 function maxProcessedMessageId(result) {
   return Math.max(0, ...result.successfulMessageIds, ...result.skippedMessageIds);
 }
@@ -5340,8 +5553,41 @@ function requireUserClient() {
 function normalizeSource(source) {
   const trimmed = source.trim();
   if (!trimmed) throw new Error("\u9891\u9053\u4E0D\u80FD\u4E3A\u7A7A");
+  const privateLink = trimmed.match(/^https?:\/\/t\.me\/c\/(\d+)(?:\/\d+)*\/?(?:\?.*)?$/i);
+  if (privateLink) return `-100${privateLink[1]}`;
   if (trimmed.startsWith("@") || /^-?\d+$/.test(trimmed) || /^https?:\/\//i.test(trimmed)) return trimmed;
   return `@${trimmed}`;
+}
+var ENTITY_NOT_FOUND_PATTERN = /Could not find the input entity|Cannot find any entity|PEER_ID_INVALID|CHANNEL_INVALID/i;
+var lastEntityCacheWarmAt = 0;
+function isEntityNotFoundError(error) {
+  return ENTITY_NOT_FOUND_PATTERN.test(error instanceof Error ? error.message : String(error));
+}
+async function warmEntityCache(userClient2) {
+  if (Date.now() - lastEntityCacheWarmAt < 6e4) return false;
+  lastEntityCacheWarmAt = Date.now();
+  await userClient2.getDialogs({ limit: 200 });
+  return true;
+}
+async function resolveSourceEntity(userClient2, source) {
+  try {
+    return await userClient2.getEntity(source);
+  } catch (error) {
+    if (!isEntityNotFoundError(error)) throw error;
+    await warmEntityCache(userClient2);
+    return await userClient2.getEntity(source);
+  }
+}
+async function listTelegramDialogs(keyword, limit = 30) {
+  const userClient2 = requireUserClient();
+  const dialogs = await userClient2.getDialogs({ limit: 200 });
+  const normalizedKeyword = keyword?.trim().toLowerCase();
+  const items = dialogs.filter((dialog) => dialog.isChannel || dialog.isGroup).map((dialog) => ({
+    id: dialog.id?.toString() || "",
+    title: dialog.title || dialog.name || "(\u672A\u547D\u540D)",
+    kind: dialog.isChannel && !dialog.isGroup ? "\u{1F4E2} \u9891\u9053" : "\u{1F465} \u7FA4\u7EC4"
+  })).filter((item) => item.id && (!normalizedKeyword || item.title.toLowerCase().includes(normalizedKeyword)));
+  return { total: items.length, items: items.slice(0, limit) };
 }
 function getEntityTitle(entity, fallback) {
   return entity?.title || [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || entity?.username || fallback;
@@ -5372,7 +5618,14 @@ function messageMatchesHashtag(message, normalizedTag) {
   return pattern.test(body);
 }
 async function getLatestMessageId(userClient2, source) {
-  const [latest] = await userClient2.getMessages(source, { limit: 1 });
+  let latest;
+  try {
+    [latest] = await userClient2.getMessages(source, { limit: 1 });
+  } catch (error) {
+    if (!isEntityNotFoundError(error)) throw error;
+    await warmEntityCache(userClient2);
+    [latest] = await userClient2.getMessages(source, { limit: 1 });
+  }
   return latest?.id || 0;
 }
 function messageGroupId(message) {
@@ -5630,8 +5883,7 @@ async function hydratePendingDownloadRefs(userClient2, jobId) {
 async function subscribeTelegramChannel(userId, chatId, sourceInput, folderOverride) {
   const userClient2 = requireUserClient();
   const source = normalizeSource(sourceInput);
-  await assertTelegramSourceAllowed(source);
-  const entity = await userClient2.getEntity(source);
+  const entity = await resolveSourceEntity(userClient2, source);
   const latestMessageId = await getLatestMessageId(userClient2, source);
   const title = getEntityTitle(entity, source);
   const result = await query(
@@ -5917,7 +6169,6 @@ async function runSegmentedTelegramJob(botClient, requestMessage, jobId, source,
 }
 async function enqueueTelegramDateDownload(botClient, requestMessage, userId, sourceInput, startDateText, endDateText, folderOverride, options = {}) {
   const source = normalizeSource(sourceInput);
-  await assertTelegramSourceAllowed(source);
   const startDate = parseDateOnly(startDateText);
   const endDate = parseDateOnly(endDateText, true);
   if (startDate > endDate) throw new Error("\u5F00\u59CB\u65E5\u671F\u4E0D\u80FD\u665A\u4E8E\u7ED3\u675F\u65E5\u671F");
@@ -5935,7 +6186,6 @@ async function enqueueTelegramDateDownload(botClient, requestMessage, userId, so
 }
 async function enqueueTelegramTagDownload(botClient, requestMessage, userId, sourceInput, tagInput, folderOverride, options = {}) {
   const source = normalizeSource(sourceInput);
-  await assertTelegramSourceAllowed(source);
   const tag = normalizeHashtag(tagInput);
   const jobId = await createJob(userId, requestMessage.chatId?.toString(), "tag_download", source, {
     mode: "tag",
@@ -6086,14 +6336,14 @@ async function runSubscriptionScan(botClient) {
   const userClient2 = getTelegramUserClient();
   if (!userClient2 || !isTelegramUserClientReady()) return;
   const result = await query(
-    `SELECT id, user_id, chat_id, source, last_message_id, folder_override
+    `SELECT id, user_id, chat_id, source, title, last_message_id, folder_override
          FROM telegram_channel_subscriptions
          WHERE enabled = true
          ORDER BY updated_at ASC`
   );
+  const summaryByChat = /* @__PURE__ */ new Map();
   for (const row of result.rows) {
     try {
-      await assertTelegramSourceAllowed(row.source);
       const latestMessageId = await getLatestMessageId(userClient2, row.source);
       const lastMessageId = Number(row.last_message_id || 0);
       if (!latestMessageId || latestMessageId <= lastMessageId) continue;
@@ -6106,6 +6356,12 @@ async function runSubscriptionScan(botClient) {
       const targetChat = row.chat_id || row.user_id;
       const requestMessage = { chatId: targetChat, id: latestMessageId };
       const subscriptionRefs = candidateMessages.map((message) => toChannelDownloadRef(row.source, message)).filter((ref) => Boolean(ref));
+      if (subscriptionRefs.length === 0) {
+        const scannedMaxId2 = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
+        await updateJob(jobId, { status: "completed", enqueued_count: 0, skipped_count: 0, finished_at: /* @__PURE__ */ new Date() });
+        await query("UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2", [scannedMaxId2, row.id]);
+        continue;
+      }
       await markDownloadRefsDownloading(jobId, subscriptionRefs);
       const downloadResult = await downloadTelegramChannelRange(botClient, requestMessage, row.source, 0, ids.length, "newer", ids, row.folder_override || null, subscriptionRefs, (ref, status, error) => markDownloadRefStatus(jobId, ref, status, error));
       await updateJob(jobId, {
@@ -6119,11 +6375,32 @@ async function runSubscriptionScan(botClient) {
       const safeAdvanceId = downloadResult.failed > 0 ? Math.max(lastMessageId, maxProcessedMessageId(downloadResult)) : scannedMaxId;
       await query("UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2", [safeAdvanceId, row.id]);
       if (downloadResult.found > 0) {
-        await botClient.sendMessage(targetChat, { message: `\u2705 \u8BA2\u9605 ${row.source} \u5DF2\u540C\u6B65 ${downloadResult.found} \u4E2A\u65B0\u6587\u4EF6\uFF0C\u8DF3\u8FC7 ${downloadResult.skipped} \u6761${downloadResult.failed ? `\uFF0C\u5931\u8D25 ${downloadResult.failed} \u6761` : ""}${safeAdvanceId < latestMessageId ? "\u3002\u672C\u8F6E\u8FBE\u5230\u626B\u63CF\u4E0A\u9650\u6216\u5B58\u5728\u5931\u8D25\u9879\uFF0C\u5269\u4F59\u5C06\u5728\u540E\u7EED\u7EE7\u7EED\u5904\u7406\u3002" : "\u3002"}` }).catch(() => void 0);
+        const key = targetChat?.toString() || String(row.user_id);
+        const summary = summaryByChat.get(key) || { target: targetChat, entries: [], totalFound: 0, totalSkipped: 0, totalFailed: 0, anyPartial: false };
+        const partial = safeAdvanceId < latestMessageId;
+        summary.entries.push({ label: row.title || row.source, found: downloadResult.found, skipped: downloadResult.skipped, failed: downloadResult.failed, partial });
+        summary.totalFound += downloadResult.found;
+        summary.totalSkipped += downloadResult.skipped;
+        summary.totalFailed += downloadResult.failed;
+        summary.anyPartial = summary.anyPartial || partial;
+        summaryByChat.set(key, summary);
       }
     } catch (error) {
       console.error("\u{1F916} Telegram \u8BA2\u9605\u540C\u6B65\u5931\u8D25:", error);
     }
+  }
+  const SUMMARY_LINE_CAP = 30;
+  for (const summary of summaryByChat.values()) {
+    const header = `\u2705 \u8BA2\u9605\u540C\u6B65\u5B8C\u6210\uFF1A${summary.entries.length} \u4E2A\u9891\u9053/\u7FA4\u7EC4\u5171\u65B0\u589E ${summary.totalFound} \u4E2A\u6587\u4EF6` + (summary.totalSkipped ? `\uFF0C\u8DF3\u8FC7 ${summary.totalSkipped} \u6761` : "") + (summary.totalFailed ? `\uFF0C\u5931\u8D25 ${summary.totalFailed} \u6761` : "") + "\u3002";
+    const shown = summary.entries.slice(0, SUMMARY_LINE_CAP);
+    const lines = shown.map((e) => `\u2022 ${e.label}\uFF1A+${e.found}` + (e.skipped ? ` \u8DF3\u8FC7${e.skipped}` : "") + (e.failed ? ` \u5931\u8D25${e.failed}` : "") + (e.partial ? " \u23F3" : ""));
+    if (summary.entries.length > SUMMARY_LINE_CAP) {
+      lines.push(`\u2026\u7B49\u5171 ${summary.entries.length} \u4E2A`);
+    }
+    if (summary.anyPartial) {
+      lines.push("", "\u23F3 \u6807\u8BB0\u7684\u9891\u9053\u672C\u8F6E\u8FBE\u5230\u626B\u63CF\u4E0A\u9650\u6216\u5B58\u5728\u5931\u8D25\u9879\uFF0C\u5269\u4F59\u5C06\u5728\u540E\u7EED\u7EE7\u7EED\u5904\u7406\u3002");
+    }
+    await botClient.sendMessage(summary.target, { message: [header, "", ...lines].join("\n") }).catch(() => void 0);
   }
 }
 async function recoverTelegramJob(botClient, job) {
@@ -7673,10 +7950,31 @@ function selectPrimaryOutputFile(taskDir) {
 }
 async function runYtDlpDownload(url, taskDir) {
   ensureDir(taskDir);
+  let cookiesFile = null;
+  try {
+    const cookiesText = await getCookiesForUrl(url);
+    if (cookiesText) {
+      cookiesFile = path14.join(taskDir, "cookies.txt");
+      fs10.writeFileSync(cookiesFile, cookiesText, { mode: 384 });
+      console.log(`\u{1F36A} \u5DF2\u4E3A ${url} \u5339\u914D\u5230\u767B\u5F55 Cookie\uFF0C\u5C06\u901A\u8FC7 --cookies \u4F20\u7ED9 yt-dlp`);
+    } else {
+      const hosts = await listCookieHosts();
+      const dump = (s) => `${s}<${[...s].map((c) => c.codePointAt(0)).join(".")}>`;
+      let urlHost = "";
+      try {
+        urlHost = new URL(url).hostname;
+      } catch {
+      }
+      console.log(`\u{1F36A} ${url} \u672A\u5339\u914D\u5230\u5DF2\u914D\u7F6E\u7684\u767B\u5F55 Cookie\uFF08URL\u4E3B\u673A=${dump(urlHost)}\uFF1B\u5DF2\u914D\u7F6E\u7F51\u7AD9=${hosts.length ? hosts.map(dump).join(", ") : "\u65E0"}\uFF09`);
+    }
+  } catch (e) {
+    console.error("\u{1F36A} \u8BFB\u53D6 ytdlp cookies \u5931\u8D25:", e);
+  }
   const outputTemplate = path14.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
   const args = [
     "--no-playlist",
     "--newline",
+    ...cookiesFile ? ["--cookies", cookiesFile] : [],
     "--merge-output-format",
     "mp4",
     "-o",
@@ -7895,7 +8193,350 @@ function buildTelegramCommentsKeyboard() {
     ]
   });
 }
+var QUICK_ACTIONS = {
+  subscribe: "\u{1F4E1} \u8BA2\u9605\u9891\u9053",
+  download: "\u{1F4E6} \u4E0B\u8F7D\u9891\u9053",
+  tasks: "\u{1F527} \u4EFB\u52A1\u961F\u5217",
+  menu: "\u{1F3E0} \u4E3B\u83DC\u5355"
+};
+var QUICK_ACTION_VALUES = new Set(Object.values(QUICK_ACTIONS));
+function buildQuickActionKeyboard() {
+  return new Api6.ReplyKeyboardMarkup({
+    resize: true,
+    rows: [
+      new Api6.KeyboardButtonRow({
+        buttons: [
+          new Api6.KeyboardButton({ text: QUICK_ACTIONS.subscribe }),
+          new Api6.KeyboardButton({ text: QUICK_ACTIONS.download })
+        ]
+      }),
+      new Api6.KeyboardButtonRow({
+        buttons: [
+          new Api6.KeyboardButton({ text: QUICK_ACTIONS.tasks }),
+          new Api6.KeyboardButton({ text: QUICK_ACTIONS.menu })
+        ]
+      })
+    ]
+  });
+}
+function buildMainMenu() {
+  return {
+    text: [
+      "\u{1F4C2} **TG Vault \u63A7\u5236\u53F0**",
+      "",
+      "\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5373\u53EF\u64CD\u4F5C\uFF0C\u65E0\u9700\u8BB0\u5FC6\u547D\u4EE4\u3002",
+      "\u4E5F\u53EF\u76F4\u63A5\u53D1\u9001 / \u8F6C\u53D1\u6587\u4EF6\u8FDB\u884C\u4E0A\u4F20\u3002"
+    ].join("\n"),
+    buttons: new Api6.ReplyInlineMarkup({
+      rows: [
+        new Api6.KeyboardButtonRow({
+          buttons: [
+            new Api6.KeyboardButtonCallback({ text: "\u{1F4E1} \u8BA2\u9605\u9891\u9053", data: Buffer.from("menu_sub") }),
+            new Api6.KeyboardButtonCallback({ text: "\u{1F4E6} \u4E0B\u8F7D\u9891\u9053", data: Buffer.from("menu_download") })
+          ]
+        }),
+        new Api6.KeyboardButtonRow({
+          buttons: [
+            new Api6.KeyboardButtonCallback({ text: "\u{1F527} \u4EFB\u52A1\u961F\u5217", data: Buffer.from("menu_tasks") }),
+            new Api6.KeyboardButtonCallback({ text: "\u{1F4BE} \u5B58\u50A8", data: Buffer.from("menu_storage") })
+          ]
+        }),
+        new Api6.KeyboardButtonRow({
+          buttons: [
+            new Api6.KeyboardButtonCallback({ text: "\u2699\uFE0F \u8BBE\u7F6E", data: Buffer.from("menu_settings") }),
+            new Api6.KeyboardButtonCallback({ text: "\u2753 \u5E2E\u52A9", data: Buffer.from("menu_help") })
+          ]
+        })
+      ]
+    })
+  };
+}
+function buildSettingsMenu() {
+  return {
+    text: [
+      "\u2699\uFE0F **\u8BBE\u7F6E**",
+      "",
+      "\u70B9\u51FB\u4EFB\u610F\u9879\u8FDB\u884C\u8C03\u6574\uFF0C\u6BCF\u9879\u90FD\u4F1A\u663E\u793A\u5F53\u524D\u503C\u3002"
+    ].join("\n"),
+    buttons: new Api6.ReplyInlineMarkup({
+      rows: [
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u26A1 \u5355\u6587\u4EF6\u5206\u7247\u5E76\u53D1", data: Buffer.from("set_workers") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F4E6} \u540C\u65F6\u4E0B\u8F7D\u6587\u4EF6\u6570", data: Buffer.from("set_files") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F9EC} \u91CD\u590D\u6587\u4EF6\u5904\u7406", data: Buffer.from("set_dup") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F9F9} \u81EA\u52A8\u6E05\u7406\u8BBE\u7F6E", data: Buffer.from("set_cleanup") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F4C1} \u4FDD\u5B58\u8DEF\u5F84\u89C4\u5219", data: Buffer.from("set_path") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F4BE} \u5207\u6362\u5B58\u50A8\u6E90", data: Buffer.from("set_storage") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F36A} ytdlp \u767B\u5F55 Cookie", data: Buffer.from("set_ytdlp_cookies") })] }),
+        new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F3E0} \u8FD4\u56DE\u4E3B\u83DC\u5355", data: Buffer.from("menu_home") })] })
+      ]
+    })
+  };
+}
+function callbackMessageProxy(activeClient, update) {
+  const entity = update.userId;
+  return {
+    chatId: update.userId,
+    senderId: update.userId,
+    reply: (params) => activeClient.sendMessage(entity, params)
+  };
+}
+async function handleMainMenuCallback(activeClient, update, data) {
+  const userId = update.userId.toJSNumber();
+  if (!await isAuthenticatedAsync(userId)) {
+    await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+    return;
+  }
+  const proxy = callbackMessageProxy(activeClient, update);
+  const ack = (msg) => activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, ...msg ? { message: msg } : {} }));
+  if (data === "menu_home") {
+    const menu = buildMainMenu();
+    await activeClient.editMessage(update.peer, { message: update.msgId, text: menu.text, buttons: menu.buttons });
+    await ack();
+    return;
+  }
+  if (data === "menu_settings") {
+    const settings = buildSettingsMenu();
+    await activeClient.editMessage(update.peer, { message: update.msgId, text: settings.text, buttons: settings.buttons });
+    await ack();
+    return;
+  }
+  if (data === "menu_sub") {
+    await ack("\u6253\u5F00\u8BA2\u9605\u7BA1\u7406");
+    await startTelegramWizard(proxy, userId, "tg_sub_manage");
+    return;
+  }
+  if (data === "menu_download") {
+    await ack("\u6253\u5F00\u9891\u9053\u4E0B\u8F7D");
+    await startTelegramWizard(proxy, userId, "tg_download");
+    return;
+  }
+  if (data === "menu_tasks") {
+    await ack();
+    await handleTasks(proxy);
+    return;
+  }
+  if (data === "menu_storage") {
+    await ack();
+    await handleStorage(proxy);
+    return;
+  }
+  if (data === "menu_help") {
+    await ack();
+    await handleHelp(proxy);
+    return;
+  }
+}
+async function handleSettingsMenuCallback(activeClient, update, data) {
+  const userId = update.userId.toJSNumber();
+  if (!await isAuthenticatedAsync(userId)) {
+    await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+    return;
+  }
+  const proxy = callbackMessageProxy(activeClient, update);
+  await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+  switch (data) {
+    case "set_workers":
+      await handleDownloadWorkers(proxy);
+      return;
+    case "set_files":
+      await handleFileConcurrency(proxy);
+      return;
+    case "set_dup":
+      await handleDuplicateMode(proxy);
+      return;
+    case "set_cleanup":
+      await handleCleanupSettings(proxy);
+      return;
+    case "set_path":
+      await handlePathRules(proxy);
+      return;
+    case "set_storage":
+      await handleStorageSwitch(proxy);
+      return;
+    case "set_ytdlp_cookies":
+      await handleYtdlpCookiesCommand(proxy);
+      return;
+  }
+}
+async function buildYtdlpCookiesView() {
+  const summaries = await listCookieHostSummaries();
+  const lines = [
+    "\u{1F36A} **yt-dlp \u767B\u5F55 Cookie**",
+    "",
+    "\u4E3A\u9700\u8981\u767B\u5F55\u7684\u7F51\u7AD9\u914D\u7F6E Cookie\uFF0C`/ytdlp` \u4E0B\u8F7D\u8BE5\u7F51\u7AD9\u94FE\u63A5\u65F6\u4F1A\u81EA\u52A8\u5E26\u4E0A\uFF0C\u53EF\u4E0B\u8F7D\u4F1A\u5458/\u4ED8\u8D39/\u79C1\u5BC6\u5185\u5BB9\u3002"
+  ];
+  const rows = [];
+  if (summaries.length === 0) {
+    lines.push("", "\u5F53\u524D\u6CA1\u6709\u5DF2\u914D\u7F6E\u7684\u7F51\u7AD9\u3002");
+  } else {
+    lines.push("", "\u5DF2\u914D\u7F6E\u7F51\u7AD9\uFF08\u70B9\u51FB\u53EF\u5220\u9664\uFF09\uFF1A");
+    for (const { host, bytes } of summaries) {
+      const size = bytes > 0 ? `${(bytes / 1024).toFixed(1)}KB` : "\u26A0\uFE0F \u7A7A\uFF0C\u8BF7\u91CD\u65B0\u914D\u7F6E";
+      rows.push(new Api6.KeyboardButtonRow({
+        buttons: [new Api6.KeyboardButtonCallback({ text: `\u{1F5D1} ${host}\uFF08${size}\uFF09`, data: Buffer.from(`ytc_del_${host}`) })]
+      }));
+    }
+  }
+  rows.push(new Api6.KeyboardButtonRow({
+    buttons: [new Api6.KeyboardButtonCallback({ text: "\u2795 \u6DFB\u52A0\u7F51\u7AD9", data: Buffer.from("ytc_add") })]
+  }));
+  rows.push(new Api6.KeyboardButtonRow({
+    buttons: [new Api6.KeyboardButtonCallback({ text: "\u274C \u5173\u95ED", data: Buffer.from("ytc_close") })]
+  }));
+  return { text: lines.join("\n"), buttons: new Api6.ReplyInlineMarkup({ rows }) };
+}
+async function handleYtdlpCookiesCommand(message) {
+  if (typeof message.senderId?.toJSNumber === "function") {
+    cookieEntryState.delete(message.senderId.toJSNumber());
+  }
+  const view = await buildYtdlpCookiesView();
+  await message.reply({ message: view.text, buttons: view.buttons });
+}
+async function handleYtdlpCookiesCallback(activeClient, update, data) {
+  const userId = update.userId.toJSNumber();
+  if (!await isAuthenticatedAsync(userId)) {
+    await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+    return;
+  }
+  const ack = (msg, alert = false) => activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, ...msg ? { message: msg, alert } : {} }));
+  const rerender = async () => {
+    const view = await buildYtdlpCookiesView();
+    await activeClient.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
+  };
+  if (data === "ytc_add") {
+    cookieEntryState.set(userId, { step: "host" });
+    await ack("\u6DFB\u52A0\u7F51\u7AD9");
+    await activeClient.sendMessage(update.userId, {
+      message: "\u8BF7\u53D1\u9001\u8981\u914D\u7F6E Cookie \u7684\u7F51\u7AD9\u57DF\u540D\uFF08\u4F8B\u5982 `youtube.com`\uFF0C\u4E5F\u53EF\u76F4\u63A5\u7C98\u8D34\u8BE5\u7AD9\u7684\u4E00\u4E2A\u94FE\u63A5\uFF09\u3002",
+      buttons: new Api6.ReplyInlineMarkup({ rows: [new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u274C \u53D6\u6D88", data: Buffer.from("ytc_cancel") })] })] })
+    });
+    return;
+  }
+  if (data === "ytc_cancel") {
+    cookieEntryState.delete(userId);
+    await ack("\u5DF2\u53D6\u6D88");
+    await activeClient.sendMessage(update.userId, { message: "\u5DF2\u53D6\u6D88 Cookie \u914D\u7F6E\u3002" });
+    return;
+  }
+  if (data === "ytc_close") {
+    cookieEntryState.delete(userId);
+    await ack("\u5DF2\u5173\u95ED");
+    await activeClient.editMessage(update.peer, { message: update.msgId, text: "\u{1F36A} \u5DF2\u5173\u95ED Cookie \u914D\u7F6E\u9762\u677F\u3002" });
+    return;
+  }
+  if (data.startsWith("ytc_del_")) {
+    const host = data.slice("ytc_del_".length);
+    const removed = await deleteCookiesForHost(host);
+    await ack(removed ? `\u5DF2\u5220\u9664 ${host}` : "\u672A\u627E\u5230\u8BE5\u7F51\u7AD9");
+    await rerender();
+    return;
+  }
+  await ack();
+}
+async function handleCookieEntryMessage(message, senderId, text) {
+  const entry = cookieEntryState.get(senderId);
+  if (!entry) return false;
+  if (message.media) return false;
+  if (entry.step === "host") {
+    const host2 = normalizeCookieHost(text);
+    if (!host2) {
+      await message.reply({ message: "\u274C \u65E0\u6CD5\u8BC6\u522B\u57DF\u540D\uFF0C\u8BF7\u91CD\u65B0\u53D1\u9001\uFF0C\u4F8B\u5982 `youtube.com`\u3002" });
+      return true;
+    }
+    cookieEntryState.set(senderId, { step: "value", host: host2 });
+    await message.reply({
+      message: [
+        `\u7F51\u7AD9\uFF1A\`${host2}\``,
+        "",
+        "\u73B0\u5728\u8BF7\u628A\u8BE5\u7F51\u7AD9\u7684 Cookie \u53D1\u7ED9\u6211\uFF0C\u4E8C\u9009\u4E00\uFF1A",
+        "\u2460 \uFF08\u63A8\u8350\uFF09\u4E0A\u4F20\u5BFC\u51FA\u7684 `cookies.txt` \u6587\u4EF6\uFF1B",
+        "\u2461 \u76F4\u63A5\u7C98\u8D34 cookies.txt \u7684\u5B8C\u6574\u5185\u5BB9\u4F5C\u4E3A\u6587\u672C\u3002",
+        "",
+        "\u63D0\u793A\uFF1A\u8BF7\u7528\u6D4F\u89C8\u5668\u6269\u5C55\uFF08\u5982 \u201CGet cookies.txt\u201D\uFF09\u5BFC\u51FA Netscape \u683C\u5F0F\uFF1B\u4E0A\u4F20\u6587\u4EF6\u6BD4\u7C98\u8D34\u66F4\u53EF\u9760\uFF08\u7C98\u8D34\u53EF\u80FD\u4E22\u5931\u5236\u8868\u7B26\uFF09\u3002"
+      ].join("\n"),
+      buttons: new Api6.ReplyInlineMarkup({ rows: [new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u274C \u53D6\u6D88", data: Buffer.from("ytc_cancel") })] })] })
+    });
+    return true;
+  }
+  const host = entry.host;
+  const content = text;
+  if (Buffer.byteLength(content, "utf8") > YTDLP_COOKIE_MAX_BYTES) {
+    await message.reply({ message: "\u274C \u5185\u5BB9\u8FC7\u5927\uFF0C\u8BF7\u6539\u7528\u4E0A\u4F20 `cookies.txt` \u6587\u4EF6\u7684\u65B9\u5F0F\u3002" });
+    return true;
+  }
+  try {
+    await setCookiesForHost(host, content);
+    cookieEntryState.delete(senderId);
+    const warn = looksLikeCookies(content) ? "" : "\n\n\u26A0\uFE0F \u5185\u5BB9\u770B\u8D77\u6765\u4E0D\u50CF\u6807\u51C6 cookies.txt\uFF0C\u82E5\u4E0B\u8F7D\u4ECD\u5931\u8D25\uFF0C\u8BF7\u6539\u7528\u4E0A\u4F20\u6587\u4EF6\u65B9\u5F0F\u3002";
+    const view = await buildYtdlpCookiesView();
+    await message.reply({ message: `\u2705 \u5DF2\u4FDD\u5B58 \`${host}\` \u7684 Cookie\u3002${warn}` });
+    await message.reply({ message: view.text, buttons: view.buttons });
+  } catch (e) {
+    await message.reply({ message: `\u274C \u4FDD\u5B58\u5931\u8D25\uFF1A${e instanceof Error ? e.message : String(e)}` });
+  }
+  return true;
+}
+function buildPathStepKeyboard() {
+  return new Api6.ReplyInlineMarkup({
+    rows: [
+      new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F4C1} \u4F7F\u7528\u9ED8\u8BA4\u76EE\u5F55", data: Buffer.from("tgw_path_skip") })] }),
+      new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u274C \u53D6\u6D88", data: Buffer.from("tgw_cancel") })] })
+    ]
+  });
+}
+function buildWizardCancelKeyboard() {
+  return new Api6.ReplyInlineMarkup({
+    rows: [new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u274C \u53D6\u6D88", data: Buffer.from("tgw_cancel") })] })]
+  });
+}
+function wizardStepButtons(state) {
+  switch (state.step) {
+    case "mode":
+      return buildTelegramDownloadModeKeyboard();
+    case "comments":
+      return buildTelegramCommentsKeyboard();
+    case "path":
+      return buildPathStepKeyboard();
+    default:
+      return buildWizardCancelKeyboard();
+  }
+}
+async function handleWizardCallback(activeClient, update, data) {
+  const userId = update.userId.toJSNumber();
+  if (!await isAuthenticatedAsync(userId)) {
+    await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+    return;
+  }
+  if (data === "tgw_cancel") {
+    telegramWizardStates.delete(userId);
+    await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u53D6\u6D88" }));
+    await activeClient.sendMessage(update.userId, { message: "\u5DF2\u53D6\u6D88\u5F53\u524D\u64CD\u4F5C\u3002" });
+    return;
+  }
+  if (data === "tgw_path_skip") {
+    const state = telegramWizardStates.get(userId);
+    if (!state || state.step !== "path") {
+      await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BE5\u6B65\u9AA4\u5DF2\u7ED3\u675F", alert: true }));
+      return;
+    }
+    await activeClient.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u4F7F\u7528\u9ED8\u8BA4\u76EE\u5F55" }));
+    await handleTelegramWizardMessage(callbackMessageProxy(activeClient, update), userId, "\u8DF3\u8FC7");
+    return;
+  }
+}
 var telegramWizardStates = /* @__PURE__ */ new Map();
+var pickerSelections = /* @__PURE__ */ new Map();
+function getPickerSelections(userId) {
+  let s = pickerSelections.get(userId);
+  if (!s) {
+    s = /* @__PURE__ */ new Set();
+    pickerSelections.set(userId, s);
+  }
+  return s;
+}
+function clearPickerSelections(userId) {
+  pickerSelections.delete(userId);
+}
 var telegramRateBuckets = /* @__PURE__ */ new Map();
 var TELEGRAM_MESSAGE_RATE_WINDOW_MS = Math.max(1e4, parseInt(process.env.TELEGRAM_RATE_WINDOW_MS || "60000", 10) || 6e4);
 var TELEGRAM_MESSAGE_RATE_MAX = Math.max(5, parseInt(process.env.TELEGRAM_RATE_MAX || "30", 10) || 30);
@@ -7974,7 +8615,7 @@ function buildTelegramWizardPrompt(state) {
       "`\u6807\u7B7E` \u2014 \u4E0B\u8F7D\u5E26\u6307\u5B9A #\u6807\u7B7E \u7684\u9891\u9053\u5A92\u4F53",
       "",
       "\u4E5F\u53EF\u4EE5\u76F4\u63A5\u53D1\u9001\uFF1A`date` / `tag`\u3002",
-      "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+      "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6309\u94AE\u5373\u53EF\u9000\u51FA\uFF08\u4E5F\u53EF\u53D1\u9001\u201C\u53D6\u6D88\u201D\uFF09\u3002"
     ].join("\n");
   }
   if (state.step === "source") {
@@ -7986,22 +8627,30 @@ function buildTelegramWizardPrompt(state) {
       "",
       "\u4E5F\u53EF\u4EE5\u76F4\u63A5\u53D1\u9001\uFF1A`@\u9891\u9053 comments` \u6216 `@\u9891\u9053 no-comments`\u3002",
       "",
-      "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+      "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6309\u94AE\u5373\u53EF\u9000\u51FA\uFF08\u4E5F\u53EF\u53D1\u9001\u201C\u53D6\u6D88\u201D\uFF09\u3002"
     ].join("\n");
   }
   if (state.step === "path") {
-    const scopeText = state.kind === "tg_sub_manage" ? state.subscriptionId ? "\u8FD9\u4E2A\u8BA2\u9605" : "\u672C\u6B21\u8BA2\u9605" : "\u672C\u6B21\u4E0B\u8F7D\u4EFB\u52A1";
+    let scopeText;
+    if (state.subscriptionId) {
+      scopeText = "\u8FD9\u4E2A\u8BA2\u9605";
+    } else if (state.sources) {
+      scopeText = `\u8FD9 ${state.sources.length} \u4E2A\u9891\u9053/\u7FA4\u7EC4`;
+    } else {
+      scopeText = "\u672C\u6B21\u8BA2\u9605";
+    }
+    const sourceLabel = state.sources ? `\u5DF2\u9009 ${state.sources.length} \u4E2A\u9891\u9053/\u7FA4\u7EC4` : state.subscriptionSource || state.source;
     return [
       title,
-      `\u{1F4CD} \u9891\u9053\uFF1A${state.subscriptionSource || state.source}`,
+      `\u{1F4CD} ${sourceLabel}`,
       "",
       `\u662F\u5426\u8981\u7ED9${scopeText}\u5355\u72EC\u6307\u5B9A\u4FDD\u5B58\u76EE\u5F55\uFF1F`,
       "",
-      "\u76F4\u63A5\u53D1\u9001\u76EE\u5F55\uFF0C\u4F8B\u5982\uFF1A`\u9891\u9053\u5907\u4EFD/\u58C1\u7EB8`",
-      "\u53D1\u9001 `\u8DF3\u8FC7` / `skip` \u4F7F\u7528\u9ED8\u8BA4\u4FDD\u5B58\u8DEF\u5F84\u89C4\u5219\u3002",
+      "\u{1F4A1} \u65E0\u9700\u81EA\u5B9A\u4E49\u76EE\u5F55\u65F6\uFF0C\u76F4\u63A5\u70B9\u51FB\u4E0B\u65B9\u300C\u{1F4C1} \u4F7F\u7528\u9ED8\u8BA4\u76EE\u5F55\u300D\u6309\u94AE\u5373\u53EF\u7EE7\u7EED\u3002",
+      "\u5982\u9700\u81EA\u5B9A\u4E49\uFF0C\u76F4\u63A5\u53D1\u9001\u76EE\u5F55\uFF0C\u4F8B\u5982\uFF1A`\u9891\u9053\u5907\u4EFD/\u58C1\u7EB8`\uFF08\u4E5F\u53EF\u53D1\u9001 `\u8DF3\u8FC7` / `skip`\uFF09\u3002",
       "",
-      `\u8BF4\u660E\uFF1A\u8FD9\u91CC\u8BBE\u7F6E\u7684\u76EE\u5F55\u53EA\u5BF9${scopeText}\u751F\u6548\uFF0C\u4E0D\u4F1A\u6539\u53D8\u5168\u5C40 /path_rules\uFF0C\u4E5F\u4E0D\u4F1A\u5F71\u54CD\u5176\u5B83\u4E0B\u8F7D\u3002`,
-      "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+      `\u8BF4\u660E\uFF1A\u8FD9\u91CC\u8BBE\u7F6E\u7684\u76EE\u5F55\u5BF9${scopeText}\u7EDF\u4E00\u751F\u6548\uFF0C\u4E0D\u4F1A\u6539\u53D8\u5168\u5C40 /path_rules\uFF0C\u4E5F\u4E0D\u4F1A\u5F71\u54CD\u5176\u5B83\u4E0B\u8F7D\u3002`,
+      "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6216\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
     ].join("\n");
   }
   if (state.step === "comments") {
@@ -8016,7 +8665,7 @@ function buildTelegramWizardPrompt(state) {
       "\u6587\u5B57\u8BC4\u8BBA\u3001\u666E\u901A\u94FE\u63A5\u548C\u5176\u5B83\u65E0\u6587\u4EF6\u6D88\u606F\u4F1A\u81EA\u52A8\u5FFD\u7565\u3002",
       "",
       "\u4E5F\u53EF\u4EE5\u53D1\u9001\uFF1A`\u5F00` / `\u5173` / `yes` / `no`\u3002",
-      "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+      "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6309\u94AE\u5373\u53EF\u9000\u51FA\uFF08\u4E5F\u53EF\u53D1\u9001\u201C\u53D6\u6D88\u201D\uFF09\u3002"
     ].join("\n");
   }
   if (state.step === "tag") {
@@ -8027,7 +8676,7 @@ function buildTelegramWizardPrompt(state) {
       "\u8BF7\u53D1\u9001\u8981\u4E0B\u8F7D\u7684\u6807\u7B7E\uFF1A",
       "\u4F8B\u5982\uFF1A`#\u58C1\u7EB8` \u6216 `\u58C1\u7EB8`",
       "",
-      "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+      "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6309\u94AE\u5373\u53EF\u9000\u51FA\uFF08\u4E5F\u53EF\u53D1\u9001\u201C\u53D6\u6D88\u201D\uFF09\u3002"
     ].join("\n");
   }
   if (state.step === "start_date") {
@@ -8038,7 +8687,7 @@ function buildTelegramWizardPrompt(state) {
       "\u8BF7\u53D1\u9001\u5F00\u59CB\u65E5\u671F\uFF1A",
       "\u683C\u5F0F\uFF1A`YYYY-MM-DD`\uFF0C\u4F8B\u5982 `2026-06-01`",
       "",
-      "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+      "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6309\u94AE\u5373\u53EF\u9000\u51FA\uFF08\u4E5F\u53EF\u53D1\u9001\u201C\u53D6\u6D88\u201D\uFF09\u3002"
     ].join("\n");
   }
   return [
@@ -8049,7 +8698,7 @@ function buildTelegramWizardPrompt(state) {
     "\u8BF7\u53D1\u9001\u7ED3\u675F\u65E5\u671F\uFF1A",
     "\u683C\u5F0F\uFF1A`YYYY-MM-DD`\uFF0C\u4F8B\u5982 `2026-06-27`",
     "",
-    "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+    "\u70B9\u51FB\u300C\u274C \u53D6\u6D88\u300D\u6309\u94AE\u5373\u53EF\u9000\u51FA\uFF08\u4E5F\u53EF\u53D1\u9001\u201C\u53D6\u6D88\u201D\uFF09\u3002"
   ].join("\n");
 }
 function isDateOnly(text) {
@@ -8112,12 +8761,13 @@ async function startTelegramWizard(message, senderId, kind) {
   telegramWizardStates.set(senderId, state);
   if (kind === "tg_sub_manage") {
     const rows = await listTelegramSubscriptions(senderId);
-    await message.reply({ message: buildSubscriptionManagePanel(rows), buttons: buildSubscriptionActionKeyboard(rows) });
+    const page = resolveSubscriptionPage(senderId, rows, 0);
+    await message.reply({ message: buildSubscriptionManagePanel(rows, page), buttons: buildSubscriptionActionKeyboard(rows, page) });
     return;
   }
   await message.reply({
     message: buildTelegramWizardPrompt(state),
-    buttons: kind === "tg_download" ? buildTelegramDownloadModeKeyboard() : void 0
+    buttons: wizardStepButtons(state)
   });
 }
 async function handleTelegramWizardMessage(message, senderId, text) {
@@ -8142,7 +8792,7 @@ async function handleTelegramWizardMessage(message, senderId, text) {
       await message.reply({ message: "\u274C \u8BF7\u53D1\u9001 `date`/`\u65E5\u671F` \u6216 `tag`/`\u6807\u7B7E`\uFF0C\u4E5F\u53EF\u4EE5\u53D1\u9001\u201C\u53D6\u6D88\u201D\u9000\u51FA\u3002" });
       return true;
     }
-    await message.reply({ message: buildTelegramWizardPrompt(state) });
+    await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     return true;
   }
   if (state.step === "source") {
@@ -8170,11 +8820,12 @@ async function handleTelegramWizardMessage(message, senderId, text) {
         const sub = await unsubscribeTelegramChannel(senderId, target.id);
         telegramWizardStates.delete(senderId);
         const rowsAfterCancel = await listTelegramSubscriptions(senderId);
+        const cancelPage = resolveSubscriptionPage(senderId, rowsAfterCancel);
         await message.reply({
           message: [
             sub ? `\u2705 \u5DF2\u53D6\u6D88\u8BA2\u9605 ${sub.title || sub.source}` : "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605",
             "",
-            buildSubscriptionManagePanel(rowsAfterCancel)
+            buildSubscriptionManagePanel(rowsAfterCancel, cancelPage)
           ].join("\n")
         });
         return true;
@@ -8184,11 +8835,11 @@ async function handleTelegramWizardMessage(message, senderId, text) {
         return true;
       }
       state.step = "path";
-      await message.reply({ message: buildTelegramWizardPrompt(state) });
+      await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
       return true;
     }
     state.step = "path";
-    await message.reply({ message: buildTelegramWizardPrompt(state) });
+    await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     return true;
   }
   if (state.step === "path") {
@@ -8210,17 +8861,59 @@ async function handleTelegramWizardMessage(message, senderId, text) {
       try {
         if (state.subscriptionId) {
           const sub = await updateTelegramSubscriptionFolder(senderId, state.subscriptionId, state.customFolder || null);
-          const rowsAfterUpdate = await listTelegramSubscriptions(senderId);
-          await message.reply({
-            message: [
-              sub ? `\u2705 \u5DF2\u66F4\u65B0\u8BA2\u9605\u76EE\u5F55\uFF1A${sub.title || sub.source}` : "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605",
-              sub && state.customFolder ? `\u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${state.customFolder}
-${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B",
-              "",
-              buildSubscriptionManagePanel(rowsAfterUpdate)
-            ].filter(Boolean).join("\n"),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate)
-          });
+          const updated = sub ? await findSubscriptionRow(senderId, state.subscriptionId) : null;
+          const header = [
+            sub ? `\u2705 \u5DF2\u66F4\u65B0\u8BA2\u9605\u76EE\u5F55\uFF1A${sub.title || sub.source}` : "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605",
+            sub && state.customFolder ? `\u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${state.customFolder}
+${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B"
+          ].filter(Boolean).join("\n");
+          if (updated) {
+            const detail = buildSubscriptionDetailView(updated);
+            await message.reply({ message: `${header}
+
+${detail.text}`, buttons: detail.buttons });
+          } else {
+            const rowsAfterUpdate = await listTelegramSubscriptions(senderId);
+            const updatePage = resolveSubscriptionPage(senderId, rowsAfterUpdate);
+            await message.reply({
+              message: [header, "", buildSubscriptionManagePanel(rowsAfterUpdate, updatePage)].join("\n"),
+              buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate, updatePage)
+            });
+          }
+        } else if (state.sources) {
+          const subs = [];
+          const errors = [];
+          for (const src of state.sources) {
+            try {
+              const sub = await subscribeTelegramChannel(senderId, message.chatId?.toString(), src, state.customFolder);
+              if (sub) subs.push(sub);
+            } catch (e) {
+              errors.push(`${src}: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+          const lines = [];
+          if (subs.length > 0) {
+            lines.push(`\u2705 \u5DF2\u8BA2\u9605 ${subs.length} \u4E2A\u9891\u9053/\u7FA4\u7EC4`);
+            const LIST_CAP = 30;
+            for (const sub of subs.slice(0, LIST_CAP)) {
+              lines.push(`  ${sub.title || sub.source} \u2014 ${sub.source}`);
+            }
+            if (subs.length > LIST_CAP) {
+              lines.push(`  \u2026\u7B49\u5171 ${subs.length} \u4E2A\uFF08\u5DF2\u5168\u90E8\u8BA2\u9605\u6210\u529F\uFF09`);
+            }
+          }
+          if (state.customFolder) {
+            lines.push(`\u{1F4C1} \u7EDF\u4E00\u4FDD\u5B58\u76EE\u5F55\uFF1A${state.customFolder}
+${buildPathPreviewLine(state.customFolder)}`);
+          } else {
+            lines.push("\u{1F4C1} \u4F7F\u7528\u9ED8\u8BA4\u4FDD\u5B58\u8DEF\u5F84\u89C4\u5219");
+          }
+          if (errors.length > 0) {
+            lines.push(`
+\u26A0\uFE0F ${errors.length} \u4E2A\u8BA2\u9605\u5931\u8D25\uFF1A
+${errors.join("\n")}`);
+          }
+          await message.reply({ message: lines.join("\n") });
         } else {
           const sub = await subscribeTelegramChannel(senderId, message.chatId?.toString(), state.source, state.customFolder);
           await message.reply({
@@ -8240,7 +8933,7 @@ ${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u672C\u8BA2\u9605\u4F
     }
     if (state.kind === "tg_tag" || state.kind === "tg_date") {
       state.step = state.includeComments !== void 0 ? state.kind === "tg_tag" ? "tag" : "start_date" : "comments";
-      await message.reply({ message: buildTelegramWizardPrompt(state), buttons: state.step === "comments" ? buildTelegramCommentsKeyboard() : void 0 });
+      await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
       return true;
     }
     return true;
@@ -8255,7 +8948,7 @@ ${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u672C\u8BA2\u9605\u4F
     state.includeComments = enabled;
     state.commentsMaxPerPost = TELEGRAM_COMMENTS_MAX_PER_POST;
     state.step = state.kind === "tg_tag" ? "tag" : "start_date";
-    await message.reply({ message: buildTelegramWizardPrompt(state) });
+    await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     return true;
   }
   if (state.step === "tag") {
@@ -8281,7 +8974,7 @@ ${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u672C\u8BA2\u9605\u4F
     }
     state.startDate = input;
     state.step = "end_date";
-    await message.reply({ message: buildTelegramWizardPrompt(state) });
+    await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     return true;
   }
   if (!isDateOnly(input)) {
@@ -8303,54 +8996,168 @@ ${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u672C\u8BA2\u9605\u4F
   }
   return true;
 }
-function buildSubscriptionActionKeyboard(rows) {
-  if (rows.length === 0) return void 0;
+var SUBSCRIPTION_PAGE_SIZE = 8;
+var subscriptionManagePage = /* @__PURE__ */ new Map();
+function subscriptionPageCount(rows) {
+  return Math.max(1, Math.ceil(rows.length / SUBSCRIPTION_PAGE_SIZE));
+}
+function resolveSubscriptionPage(userId, rows, requested) {
+  const pageCount = subscriptionPageCount(rows);
+  const raw = requested ?? subscriptionManagePage.get(userId) ?? 0;
+  const safe = Math.min(Math.max(0, raw), pageCount - 1);
+  subscriptionManagePage.set(userId, safe);
+  return safe;
+}
+function buildSubscriptionActionKeyboard(rows, page = 0) {
+  const pageCount = subscriptionPageCount(rows);
+  const safePage = Math.min(Math.max(0, page), pageCount - 1);
+  const pageRows = rows.slice(safePage * SUBSCRIPTION_PAGE_SIZE, (safePage + 1) * SUBSCRIPTION_PAGE_SIZE);
+  const navButtons = [];
+  if (safePage > 0) navButtons.push(new Api6.KeyboardButtonCallback({ text: "\u2B05\uFE0F \u4E0A\u4E00\u9875", data: Buffer.from(`tsub_page_${safePage - 1}`) }));
+  if (safePage < pageCount - 1) navButtons.push(new Api6.KeyboardButtonCallback({ text: "\u27A1\uFE0F \u4E0B\u4E00\u9875", data: Buffer.from(`tsub_page_${safePage + 1}`) }));
   return new Api6.ReplyInlineMarkup({
-    rows: rows.slice(0, 8).flatMap((row, index) => [
+    rows: [
+      ...pageRows.map((row, index) => {
+        const globalIndex = safePage * SUBSCRIPTION_PAGE_SIZE + index;
+        return new Api6.KeyboardButtonRow({
+          buttons: [new Api6.KeyboardButtonCallback({ text: `${globalIndex + 1}. ${row.enabled ? "" : "\u23F8\uFE0F "}${row.title || row.source}`, data: Buffer.from(`tsub_open_${row.id}`) })]
+        });
+      }),
+      ...navButtons.length > 0 ? [new Api6.KeyboardButtonRow({ buttons: navButtons })] : [],
       new Api6.KeyboardButtonRow({
-        buttons: [new Api6.KeyboardButtonCallback({ text: `${index + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })]
+        buttons: [new Api6.KeyboardButtonCallback({ text: "\u2795 \u4ECE\u5DF2\u52A0\u5165\u7684\u9891\u9053/\u7FA4\u7EC4\u4E2D\u9009\u62E9\u8BA2\u9605", data: Buffer.from("tsub_pick_0") })]
       }),
       new Api6.KeyboardButtonRow({
-        buttons: [
-          new Api6.KeyboardButtonCallback({ text: "\u270F\uFE0F \u4FEE\u6539\u4E13\u5C5E\u76EE\u5F55", data: Buffer.from(`tsub_folder_${row.id}`) }),
-          new Api6.KeyboardButtonCallback({ text: "\u{1F9F9} \u6E05\u9664\u76EE\u5F55", data: Buffer.from(`tsub_clear_${row.id}`) }),
-          new Api6.KeyboardButtonCallback({ text: "\u53D6\u6D88\u8BA2\u9605", data: Buffer.from(`tsub_cancel_${row.id}`) })
-        ]
+        buttons: [new Api6.KeyboardButtonCallback({ text: "\u2705 \u5B8C\u6210 / \u5173\u95ED", data: Buffer.from("tsub_close") })]
       })
-    ])
+    ]
   });
 }
-function buildSubscriptionManagePanel(rows) {
+function buildSubscriptionDetailView(row) {
+  const detailRows = [
+    new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u270F\uFE0F \u4FEE\u6539\u4E13\u5C5E\u76EE\u5F55", data: Buffer.from(`tsub_folder_${row.id}`) })] })
+  ];
+  if (row.folder_override) {
+    detailRows.push(new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F9F9} \u6E05\u9664\u4E13\u5C5E\u76EE\u5F55", data: Buffer.from(`tsub_clear_${row.id}`) })] }));
+  }
+  detailRows.push(new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u{1F5D1} \u53D6\u6D88\u8BA2\u9605", data: Buffer.from(`tsub_cancel_${row.id}`) })] }));
+  detailRows.push(new Api6.KeyboardButtonRow({ buttons: [new Api6.KeyboardButtonCallback({ text: "\u21A9\uFE0F \u8FD4\u56DE\u8BA2\u9605\u5217\u8868", data: Buffer.from("tsub_back") })] }));
+  return {
+    text: [
+      "\u{1F4E1} **\u8BA2\u9605\u8BE6\u60C5**",
+      "",
+      `${row.enabled ? "\u2705" : "\u23F8\uFE0F"} ${row.title || row.source}`,
+      `\u{1F4CD} \u6765\u6E90\uFF1A${row.source}`,
+      `\u{1F194} \u5DF2\u540C\u6B65\u81F3\u6D88\u606F ID\uFF1A${row.last_message_id || 0}`,
+      row.folder_override ? `\u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${row.folder_override}` : "\u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B"
+    ].join("\n"),
+    buttons: new Api6.ReplyInlineMarkup({ rows: detailRows })
+  };
+}
+async function findSubscriptionRow(userId, id) {
+  const rows = await listTelegramSubscriptions(userId);
+  return rows.find((r) => String(r.id) === id) || null;
+}
+var TSUB_PICK_PAGE_SIZE = 8;
+async function buildDialogPickerView(userId, page) {
+  const { items } = await listTelegramDialogs(void 0, 200);
+  const subs = await listTelegramSubscriptions(userId);
+  const subscribedSources = new Set(subs.map((s) => s.source));
+  const subscribedTitles = new Set(subs.map((s) => s.title?.toLowerCase()).filter(Boolean));
+  const filtered = items.filter(
+    (item) => !subscribedSources.has(item.id) && !subscribedTitles.has(item.title.toLowerCase())
+  );
+  const pageCount = Math.max(1, Math.ceil(filtered.length / TSUB_PICK_PAGE_SIZE));
+  const safePage = Math.min(Math.max(0, page), pageCount - 1);
+  const pageItems = filtered.slice(safePage * TSUB_PICK_PAGE_SIZE, (safePage + 1) * TSUB_PICK_PAGE_SIZE);
+  const selections = getPickerSelections(userId);
+  const rows = pageItems.map((item) => {
+    const selected = selections.has(item.id);
+    return new Api6.KeyboardButtonRow({
+      buttons: [new Api6.KeyboardButtonCallback({
+        text: `${selected ? "\u2705 " : "  "}${item.kind.split(" ")[0]} ${item.title}`.slice(0, 40),
+        data: Buffer.from(`tsub_sel_${safePage}_${item.id}`)
+      })]
+    });
+  });
+  const navButtons = [];
+  if (safePage > 0) navButtons.push(new Api6.KeyboardButtonCallback({ text: "\u2B05\uFE0F \u4E0A\u4E00\u9875", data: Buffer.from(`tsub_pick_${safePage - 1}`) }));
+  if (safePage < pageCount - 1) navButtons.push(new Api6.KeyboardButtonCallback({ text: "\u27A1\uFE0F \u4E0B\u4E00\u9875", data: Buffer.from(`tsub_pick_${safePage + 1}`) }));
+  navButtons.push(new Api6.KeyboardButtonCallback({ text: "\u21A9\uFE0F \u8FD4\u56DE\u8BA2\u9605\u7BA1\u7406", data: Buffer.from("tsub_back") }));
+  rows.push(new Api6.KeyboardButtonRow({ buttons: navButtons }));
+  if (selections.size > 0) {
+    rows.push(new Api6.KeyboardButtonRow({
+      buttons: [new Api6.KeyboardButtonCallback({
+        text: `\u2705 \u8BA2\u9605\u6240\u9009\uFF08${selections.size} \u4E2A\uFF09`,
+        data: Buffer.from("tsub_sel_done")
+      })]
+    }));
+  }
+  return {
+    text: [
+      "\u{1F4E1} **\u9009\u62E9\u8981\u8BA2\u9605\u7684\u9891\u9053/\u7FA4\u7EC4**" + (selections.size > 0 ? `\uFF08\u5DF2\u9009 ${selections.size} \u4E2A\uFF09` : ""),
+      "",
+      "\u70B9\u51FB\u9891\u9053/\u7FA4\u7EC4\u540D\u79F0\u53EF\u52FE\u9009/\u53D6\u6D88\uFF0C\u9009\u62E9\u5B8C\u6210\u540E\u70B9\u51FB\u5E95\u90E8\u6309\u94AE\u8BA2\u9605\u3002",
+      filtered.length > 0 ? `\uFF08\u7B2C ${safePage + 1}/${pageCount} \u9875\uFF0C\u5171 ${filtered.length} \u4E2A\uFF0C\u5DF2\u9690\u85CF ${items.length - filtered.length} \u4E2A\u5DF2\u8BA2\u9605\uFF09` : "\u7528\u6237\u8D26\u53F7\u5C1A\u672A\u52A0\u5165\u4EFB\u4F55\u53EF\u4EE5\u8BA2\u9605\u7684\u9891\u9053/\u7FA4\u7EC4\uFF08\u6240\u6709\u5DF2\u52A0\u5165\u7684\u5747\u5DF2\u8BA2\u9605\uFF09\u3002",
+      "",
+      "\u{1F4A1} \u79C1\u5BC6\u9891\u9053/\u7FA4\u7EC4\u9700\u8981\u7528\u6237\u8D26\u53F7\u5DF2\u52A0\u5165\u540E\u624D\u80FD\u8BA2\u9605\u3002"
+    ].join("\n"),
+    buttons: new Api6.ReplyInlineMarkup({ rows })
+  };
+}
+function buildSubscriptionManagePanel(rows, page = 0) {
+  const pageCount = subscriptionPageCount(rows);
+  const safePage = Math.min(Math.max(0, page), pageCount - 1);
+  const shown = rows.slice(safePage * SUBSCRIPTION_PAGE_SIZE, (safePage + 1) * SUBSCRIPTION_PAGE_SIZE);
+  const header = rows.length > SUBSCRIPTION_PAGE_SIZE ? `\u{1F4E1} **\u9891\u9053\u8BA2\u9605\u7BA1\u7406**\uFF08\u7B2C ${safePage + 1}/${pageCount} \u9875\uFF0C\u5171 ${rows.length} \u4E2A\uFF09` : "\u{1F4E1} **\u9891\u9053\u8BA2\u9605\u7BA1\u7406**";
   return [
-    "\u{1F4E1} **\u9891\u9053\u8BA2\u9605\u7BA1\u7406**",
+    header,
     "",
-    rows.length > 0 ? rows.map((row, index) => [
-      `${index + 1}. ${row.enabled ? "\u2705" : "\u23F8\uFE0F"} ${row.title || row.source}`,
-      `   ${row.source} \xB7 last_id=${row.last_message_id || 0}`,
-      row.folder_override ? `   \u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${row.folder_override}` : "   \u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B"
-    ].join("\n")).join("\n") : "\u5F53\u524D\u6CA1\u6709\u542F\u7528\u4E2D\u7684\u8BA2\u9605\u3002",
+    rows.length > 0 ? shown.map((row, index) => {
+      const globalIndex = safePage * SUBSCRIPTION_PAGE_SIZE + index;
+      return [
+        `${globalIndex + 1}. ${row.enabled ? "\u2705" : "\u23F8\uFE0F"} ${row.title || row.source}`,
+        `   ${row.source} \xB7 last_id=${row.last_message_id || 0}`,
+        row.folder_override ? `   \u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${row.folder_override}` : "   \u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B"
+      ].join("\n");
+    }).join("\n") : "\u5F53\u524D\u6CA1\u6709\u542F\u7528\u4E2D\u7684\u8BA2\u9605\u3002",
     "",
-    rows.length > 0 ? "\u53EF\u76F4\u63A5\u70B9\u51FB\u8BA2\u9605\u4E0B\u65B9\u6309\u94AE\u4FEE\u6539/\u6E05\u9664\u4E13\u5C5E\u76EE\u5F55\u6216\u53D6\u6D88\u8BA2\u9605\u3002" : "\u56DE\u590D\u9891\u9053\u7528\u6237\u540D\u6216\u94FE\u63A5\u53EF\u65B0\u589E\u8BA2\u9605\u3002",
+    rows.length > 0 ? "\u70B9\u51FB\u4EFB\u4E00\u8BA2\u9605\u53EF\u8FDB\u5165\u8BE6\u60C5\u83DC\u5355\uFF0C\u4FEE\u6539/\u6E05\u9664\u4E13\u5C5E\u76EE\u5F55\u6216\u53D6\u6D88\u8BA2\u9605\u3002" : "\u70B9\u51FB\u4E0B\u65B9 \u2795 \u6309\u94AE\u4ECE\u5DF2\u52A0\u5165\u7684\u9891\u9053/\u7FA4\u7EC4\u4E2D\u9009\u62E9\uFF0C\u6216\u56DE\u590D\u9891\u9053\u7528\u6237\u540D/\u94FE\u63A5\u65B0\u589E\u8BA2\u9605\u3002",
     "\u56DE\u590D\u9891\u9053\u7528\u6237\u540D\u6216\u94FE\u63A5\u4E5F\u53EF\u65B0\u589E\u8BA2\u9605\u3002",
     "\u4F8B\u5982\uFF1A`@channel_username` \u6216 `https://t.me/channel_username`",
     "",
     "\u65B0\u589E\u8BA2\u9605\u65F6\u4F1A\u8BE2\u95EE\u662F\u5426\u4E3A\u672C\u8BA2\u9605\u5355\u72EC\u6307\u5B9A\u4FDD\u5B58\u76EE\u5F55\uFF1B\u8BE5\u76EE\u5F55\u53EA\u5F71\u54CD\u8FD9\u4E2A\u8BA2\u9605\uFF0C\u4E0D\u4F1A\u6539\u53D8\u5168\u5C40 /path_rules\u3002",
     "",
-    "\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
+    "\u70B9\u51FB\u300C\u2705 \u5B8C\u6210 / \u5173\u95ED\u300D\u6216\u53D1\u9001\u201C\u53D6\u6D88\u201D\u53EF\u9000\u51FA\u3002"
   ].join("\n");
 }
 function formatSubscriptionList(rows) {
   if (rows.length === 0) return "\u{1F4ED} \u6682\u65E0\u9891\u9053\u8BA2\u9605\u3002\n\n\u4F7F\u7528 `/tg_sub @\u9891\u9053` \u6DFB\u52A0\u8BA2\u9605\u3002";
-  return [
-    "\u{1F4E1} **\u9891\u9053\u8BA2\u9605**",
-    "",
-    ...rows.map((row, index) => [
+  const MAX_LEN = 3800;
+  const header = "\u{1F4E1} **\u9891\u9053\u8BA2\u9605**\n";
+  const entries = [];
+  let used = header.length;
+  let shownCount = 0;
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    const entry = [
       `${index + 1}. ${row.enabled ? "\u2705" : "\u23F8\uFE0F"} ${row.title || row.source}`,
       `   ${row.source} \xB7 last_id=${row.last_message_id || 0}`,
       row.folder_override ? `   \u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${row.folder_override}` : "   \u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B",
       `   ID: ${String(row.id).slice(0, 8)}`
-    ].join("\n"))
-  ].join("\n");
+    ].join("\n");
+    if (used + entry.length + 1 > MAX_LEN) break;
+    entries.push(entry);
+    used += entry.length + 1;
+    shownCount++;
+  }
+  const hidden = rows.length - shownCount;
+  return [
+    header,
+    ...entries,
+    hidden > 0 ? `
+\u2026\u8FD8\u6709 ${hidden} \u4E2A\u8BA2\u9605\u672A\u663E\u793A\uFF08\u5171 ${rows.length} \u4E2A\uFF09\u3002` : ""
+  ].filter(Boolean).join("\n");
 }
 function generatePasswordKeyboard(currentLength) {
   const display = "\u25CF".repeat(currentLength) + "-".repeat(Math.max(0, 4 - currentLength));
@@ -8595,7 +9402,7 @@ async function handleTelegramDownloadModeCallback(update, data) {
     state.kind = "tg_date";
     state.step = "source";
     telegramWizardStates.set(userId, state);
-    await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state) });
+    await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6309\u65E5\u671F\u4E0B\u8F7D" }));
     return;
   }
@@ -8603,7 +9410,7 @@ async function handleTelegramDownloadModeCallback(update, data) {
     state.kind = "tg_tag";
     state.step = "source";
     telegramWizardStates.set(userId, state);
-    await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state) });
+    await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6309\u6807\u7B7E\u4E0B\u8F7D" }));
     return;
   }
@@ -8612,7 +9419,7 @@ async function handleTelegramDownloadModeCallback(update, data) {
     state.commentsMaxPerPost = TELEGRAM_COMMENTS_MAX_PER_POST;
     state.step = state.kind === "tg_tag" ? "tag" : "start_date";
     telegramWizardStates.set(userId, state);
-    await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state) });
+    await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({
       queryId: update.queryId,
       message: state.includeComments ? "\u5C06\u5305\u542B\u8BC4\u8BBA\u533A\u6587\u4EF6" : "\u4EC5\u4E0B\u8F7D\u9891\u9053\u6B63\u6587\u6587\u4EF6"
@@ -8627,21 +9434,113 @@ async function handleTelegramSubscriptionCallback(update, data) {
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
     return;
   }
-  const match = data.match(/^tsub_(view|folder|clear|cancel)_(.+)$/);
+  if (data === "tsub_close") {
+    clearPickerSelections(userId);
+    const st = telegramWizardStates.get(userId);
+    if (st?.kind === "tg_sub_manage") telegramWizardStates.delete(userId);
+    await client.editMessage(update.peer, { message: update.msgId, text: "\u2705 \u5DF2\u5173\u95ED\u8BA2\u9605\u7BA1\u7406\u3002\u968F\u65F6\u53D1\u9001 /tg_sub \u6216 /menu \u91CD\u65B0\u6253\u5F00\u3002" });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u5173\u95ED" }));
+    return;
+  }
+  if (data === "tsub_back") {
+    clearPickerSelections(userId);
+    const rowsForPanel = await listTelegramSubscriptions(userId);
+    const backPage = resolveSubscriptionPage(userId, rowsForPanel);
+    await client.editMessage(update.peer, {
+      message: update.msgId,
+      text: buildSubscriptionManagePanel(rowsForPanel, backPage),
+      buttons: buildSubscriptionActionKeyboard(rowsForPanel, backPage)
+    });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+    return;
+  }
+  const pageMatch = data.match(/^tsub_page_(\d+)$/);
+  if (pageMatch) {
+    const rowsForPage = await listTelegramSubscriptions(userId);
+    const targetPage = resolveSubscriptionPage(userId, rowsForPage, parseInt(pageMatch[1], 10));
+    await client.editMessage(update.peer, {
+      message: update.msgId,
+      text: buildSubscriptionManagePanel(rowsForPage, targetPage),
+      buttons: buildSubscriptionActionKeyboard(rowsForPage, targetPage)
+    });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+    return;
+  }
+  const selMatch = data.match(/^tsub_sel_(\d+)_(-?\d+)$/);
+  if (selMatch) {
+    const page = parseInt(selMatch[1], 10);
+    const dialogId = selMatch[2];
+    const sel = getPickerSelections(userId);
+    if (sel.has(dialogId)) sel.delete(dialogId);
+    else sel.add(dialogId);
+    const view = await buildDialogPickerView(userId, page);
+    await client.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+    return;
+  }
+  if (data === "tsub_sel_done") {
+    const sel = getPickerSelections(userId);
+    if (sel.size === 0) {
+      await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BF7\u5148\u9009\u62E9\u81F3\u5C11\u4E00\u4E2A\u9891\u9053\u6216\u7FA4\u7EC4", alert: true }));
+      return;
+    }
+    const sources = Array.from(sel);
+    clearPickerSelections(userId);
+    const state = {
+      kind: "tg_sub_manage",
+      step: "path",
+      sources,
+      subscriptionSource: `\u5DF2\u9009 ${sources.length} \u4E2A\u9891\u9053/\u7FA4\u7EC4`
+    };
+    telegramWizardStates.set(userId, state);
+    await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `\u5DF2\u9009 ${sources.length} \u4E2A\uFF0C\u8BF7\u8BBE\u7F6E\u4FDD\u5B58\u76EE\u5F55` }));
+    return;
+  }
+  const pickMatch = data.match(/^tsub_pick_(\d+)$/);
+  if (pickMatch) {
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6B63\u5728\u83B7\u53D6\u9891\u9053/\u7FA4\u7EC4\u5217\u8868\u2026" }));
+    try {
+      const view = await buildDialogPickerView(userId, parseInt(pickMatch[1], 10));
+      await client.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
+    } catch (error) {
+      await client.sendMessage(update.peer, { message: `\u274C \u83B7\u53D6\u9891\u9053/\u7FA4\u7EC4\u5217\u8868\u5931\u8D25: ${error instanceof Error ? error.message : String(error)}` });
+    }
+    return;
+  }
+  const addMatch = data.match(/^tsub_add_(-?\d+)$/);
+  if (addMatch) {
+    const picked = (await listTelegramDialogs(void 0, 200)).items.find((item) => item.id === addMatch[1]);
+    const state = {
+      kind: "tg_sub_manage",
+      step: "path",
+      source: addMatch[1],
+      subscriptionSource: picked ? `${picked.title}\uFF08${addMatch[1]}\uFF09` : addMatch[1]
+    };
+    telegramWizardStates.set(userId, state);
+    await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BF7\u8BBE\u7F6E\u4FDD\u5B58\u76EE\u5F55\u4EE5\u5B8C\u6210\u8BA2\u9605" }));
+    return;
+  }
+  const openMatch = data.match(/^tsub_open_(.+)$/);
+  if (openMatch) {
+    const row = await findSubscriptionRow(userId, openMatch[1]);
+    if (!row) {
+      await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BA2\u9605\u4E0D\u5B58\u5728\u6216\u5DF2\u53D6\u6D88", alert: true }));
+      return;
+    }
+    const detail = buildSubscriptionDetailView(row);
+    await client.editMessage(update.peer, { message: update.msgId, text: detail.text, buttons: detail.buttons });
+    await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+    return;
+  }
+  const match = data.match(/^tsub_(folder|clear|cancel)_(.+)$/);
   if (!match) return;
   const [, action, id] = match;
   const rows = await listTelegramSubscriptions(userId);
   const target = rows.find((row) => String(row.id) === id);
   if (!target) {
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BA2\u9605\u4E0D\u5B58\u5728\u6216\u5DF2\u53D6\u6D88", alert: true }));
-    return;
-  }
-  if (action === "view") {
-    await client.invoke(new Api6.messages.SetBotCallbackAnswer({
-      queryId: update.queryId,
-      message: target.folder_override ? `\u4E13\u5C5E\u76EE\u5F55\uFF1A${target.folder_override}` : "\u5F53\u524D\u4F7F\u7528\u9ED8\u8BA4\u4FDD\u5B58\u8DEF\u5F84",
-      alert: true
-    }));
     return;
   }
   if (action === "folder") {
@@ -8654,28 +9553,36 @@ async function handleTelegramSubscriptionCallback(update, data) {
       subscriptionSource: target.source
     };
     telegramWizardStates.set(userId, state);
-    await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state) });
+    await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BF7\u53D1\u9001\u65B0\u7684\u4E13\u5C5E\u76EE\u5F55" }));
     return;
   }
   if (action === "clear") {
     await updateTelegramSubscriptionFolder(userId, id, null);
-    const rowsAfterClear = await listTelegramSubscriptions(userId);
-    await client.editMessage(update.peer, {
-      message: update.msgId,
-      text: buildSubscriptionManagePanel(rowsAfterClear),
-      buttons: buildSubscriptionActionKeyboard(rowsAfterClear)
-    });
+    const updated = await findSubscriptionRow(userId, id);
+    if (updated) {
+      const detail = buildSubscriptionDetailView(updated);
+      await client.editMessage(update.peer, { message: update.msgId, text: detail.text, buttons: detail.buttons });
+    } else {
+      const rowsAfterClear = await listTelegramSubscriptions(userId);
+      const clearPage = resolveSubscriptionPage(userId, rowsAfterClear);
+      await client.editMessage(update.peer, {
+        message: update.msgId,
+        text: buildSubscriptionManagePanel(rowsAfterClear, clearPage),
+        buttons: buildSubscriptionActionKeyboard(rowsAfterClear, clearPage)
+      });
+    }
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u6E05\u9664\u4E13\u5C5E\u76EE\u5F55" }));
     return;
   }
   if (action === "cancel") {
     await unsubscribeTelegramChannel(userId, id);
     const rowsAfterCancel = await listTelegramSubscriptions(userId);
+    const cancelPage = resolveSubscriptionPage(userId, rowsAfterCancel);
     await client.editMessage(update.peer, {
       message: update.msgId,
-      text: buildSubscriptionManagePanel(rowsAfterCancel),
-      buttons: buildSubscriptionActionKeyboard(rowsAfterCancel)
+      text: buildSubscriptionManagePanel(rowsAfterCancel, cancelPage),
+      buttons: buildSubscriptionActionKeyboard(rowsAfterCancel, cancelPage)
     });
     await client.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u53D6\u6D88\u8BA2\u9605", alert: true }));
   }
@@ -8707,7 +9614,7 @@ async function initTelegramBot() {
       sessionString = fs11.readFileSync(SESSION_FILE, "utf-8").trim();
     }
     const session = new StringSession2(sessionString);
-    client = new TelegramClient4(session, apiId, apiHash, {
+    client = new TelegramClient5(session, apiId, apiHash, {
       connectionRetries: 15,
       retryDelay: 2e3,
       useWSS: false,
@@ -8745,19 +9652,11 @@ async function initTelegramBot() {
         langCode: "zh",
         commands: [
           new Api6.BotCommand({ command: "start", description: "\u5F00\u59CB\u4F7F\u7528 / \u9A8C\u8BC1\u8EAB\u4EFD" }),
-          new Api6.BotCommand({ command: "path_rules", description: "\u4FDD\u5B58\u8DEF\u5F84/\u81EA\u5B9A\u4E49\u76EE\u5F55" }),
-          new Api6.BotCommand({ command: "tg_sub", description: "\u8BA2\u9605\u9891\u9053\u81EA\u52A8\u540C\u6B65" }),
-          new Api6.BotCommand({ command: "tg_download", description: "\u6309\u65E5\u671F/\u6807\u7B7E\u4E0B\u8F7D\u9891\u9053\u6587\u4EF6" }),
-          new Api6.BotCommand({ command: "storage_switch", description: "\u5207\u6362\u5DF2\u914D\u7F6E\u5B58\u50A8\u6E90" }),
-          new Api6.BotCommand({ command: "download_workers", description: "\u8BBE\u7F6E\u5355\u6587\u4EF6\u5206\u7247\u5E76\u53D1" }),
-          new Api6.BotCommand({ command: "file_concurrency", description: "\u8BBE\u7F6E\u540C\u65F6\u4E0B\u8F7D\u6587\u4EF6\u6570" }),
-          new Api6.BotCommand({ command: "duplicate_mode", description: "\u8BBE\u7F6E\u91CD\u590D\u6587\u4EF6\u5904\u7406" }),
-          new Api6.BotCommand({ command: "cleanup_settings", description: "\u8BBE\u7F6E\u81EA\u52A8\u6E05\u7406\u5F00\u5173" }),
-          new Api6.BotCommand({ command: "storage", description: "\u67E5\u770B\u5B58\u50A8\u7EDF\u8BA1/\u6E05\u7406\u672C\u5730\u6587\u4EF6" }),
-          new Api6.BotCommand({ command: "tasks", description: "\u67E5\u770B\u4EFB\u52A1\u72B6\u6001" }),
-          new Api6.BotCommand({ command: "setup_2fa", description: "\u914D\u7F6E\u53CC\u91CD\u9A8C\u8BC1 (2FA)" }),
+          new Api6.BotCommand({ command: "menu", description: "\u4E3B\u83DC\u5355\uFF08\u8BA2\u9605/\u4E0B\u8F7D/\u4EFB\u52A1/\u5B58\u50A8/\u8BBE\u7F6E/\u5E2E\u52A9\uFF09" }),
+          new Api6.BotCommand({ command: "tg_dialogs", description: "\u5217\u51FA\u5DF2\u52A0\u5165\u7684\u9891\u9053/\u7FA4\u7EC4 ID" }),
           new Api6.BotCommand({ command: "ytdlp", description: "\u89E3\u6790\u5E76\u4E0B\u8F7D\u94FE\u63A5\u5230\u5B58\u50A8\u6E90" }),
-          new Api6.BotCommand({ command: "help", description: "\u663E\u793A\u9884\u89C8\u5E2E\u52A9" })
+          new Api6.BotCommand({ command: "setup_2fa", description: "\u914D\u7F6E\u53CC\u91CD\u9A8C\u8BC1 (2FA)" }),
+          new Api6.BotCommand({ command: "help", description: "\u663E\u793A\u5B8C\u6574\u5E2E\u52A9" })
         ]
       }));
       console.log("\u{1F916} Bot \u547D\u4EE4\u83DC\u5355\u5DF2\u66F4\u65B0");
@@ -8830,8 +9729,48 @@ async function initTelegramBot() {
               message: buildStartPrompt(),
               buttons: generatePasswordKeyboard(0)
             });
+          } else {
+            const menu = buildMainMenu();
+            await message.reply({ message: menu.text, buttons: menu.buttons });
+            await message.reply({ message: "\u5FEB\u6377\u64CD\u4F5C\u5DF2\u5C31\u7EEA \u{1F447}", buttons: buildQuickActionKeyboard() });
           }
           return;
+        }
+        if (text === "/menu" || text === QUICK_ACTIONS.menu) {
+          if (!await isAuthenticatedAsync(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          const menu = buildMainMenu();
+          await message.reply({ message: menu.text, buttons: menu.buttons });
+          return;
+        }
+        if (text === "/settings" || text === "/setting") {
+          if (!await isAuthenticatedAsync(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          const settings = buildSettingsMenu();
+          await message.reply({ message: settings.text, buttons: settings.buttons });
+          return;
+        }
+        if (QUICK_ACTION_VALUES.has(text)) {
+          if (!await isAuthenticatedAsync(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          if (text === QUICK_ACTIONS.subscribe) {
+            await startTelegramWizard(message, senderId, "tg_sub_manage");
+            return;
+          }
+          if (text === QUICK_ACTIONS.download) {
+            await startTelegramWizard(message, senderId, "tg_download");
+            return;
+          }
+          if (text === QUICK_ACTIONS.tasks) {
+            await handleTasks(message);
+            return;
+          }
         }
         if (text === "/setup_2fa" || text === "/setup-2fa") {
           if (!await isAuthenticatedAsync(senderId)) {
@@ -8861,6 +9800,14 @@ async function initTelegramBot() {
         }
         if (text === "/help") {
           await handleHelp(message);
+          return;
+        }
+        if (/^\s*\/ytdlp_(?:cookies|login)(?:@\w+)?\s*$/i.test(text)) {
+          if (!await isAuthenticatedAsync(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          await handleYtdlpCookiesCommand(message);
           return;
         }
         {
@@ -8925,6 +9872,8 @@ async function initTelegramBot() {
           return;
         }
         if (!text.startsWith("/")) {
+          const handledCookieEntry = await handleCookieEntryMessage(message, senderId, text);
+          if (handledCookieEntry) return;
           if (isCancelInput(text)) {
             const pendingMode = getPendingTelegramPathInput(chatId.toString(), senderId);
             if (pendingMode) {
@@ -8956,6 +9905,27 @@ ${buildPathPreviewLine(appliedPath.folder)}
           }
           const handledTelegramWizard = await handleTelegramWizardMessage(message, senderId, text);
           if (handledTelegramWizard) return;
+        }
+        if (text === "/tg_dialogs" || text.startsWith("/tg_dialogs ")) {
+          if (!await isAuthenticatedAsync(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          const keyword = text.split(/\s+/).slice(1).join(" ").trim() || void 0;
+          try {
+            const { total, items } = await listTelegramDialogs(keyword);
+            if (items.length === 0) {
+              await message.reply({ message: keyword ? `\u{1F4ED} \u6CA1\u6709\u627E\u5230\u6807\u9898\u5305\u542B\u300C${keyword}\u300D\u7684\u9891\u9053/\u7FA4\u7EC4\u3002` : "\u{1F4ED} \u7528\u6237\u8D26\u53F7\u5C1A\u672A\u52A0\u5165\u4EFB\u4F55\u9891\u9053/\u7FA4\u7EC4\u3002" });
+              return;
+            }
+            const lines = items.map((item) => `${item.kind} ${item.title}
+   \`${item.id}\``);
+            const header = keyword ? `\u{1F50D} \u5339\u914D\u300C${keyword}\u300D\u7684\u9891\u9053/\u7FA4\u7EC4\uFF08${items.length}/${total}\uFF09\uFF1A` : `\u{1F4CB} \u5DF2\u52A0\u5165\u7684\u9891\u9053/\u7FA4\u7EC4\uFF08\u663E\u793A ${items.length}/${total}\uFF0C\u4EC5\u53D6\u6700\u8FD1 200 \u4E2A\u5BF9\u8BDD\uFF09\uFF1A`;
+            await message.reply({ message: [header, "", ...lines, "", "\u590D\u5236 ID \u540E\u53EF\u7528 `/tg_sub <ID>` \u8BA2\u9605\u3002"].join("\n") });
+          } catch (error) {
+            await message.reply({ message: `\u274C \u83B7\u53D6\u5BF9\u8BDD\u5217\u8868\u5931\u8D25: ${error instanceof Error ? error.message : String(error)}` });
+          }
+          return;
         }
         if (text === "/tg_subs" || text === "/tg_subscriptions") {
           if (!await isAuthenticatedAsync(senderId)) {
@@ -9315,6 +10285,10 @@ ${buildPathPreviewLine(appliedPath.folder)}
           await handleTelegramSubscriptionCallback(callbackUpdate, data);
           return;
         }
+        if (data.startsWith("ytc_")) {
+          await handleYtdlpCookiesCallback(activeClient, callbackUpdate, data);
+          return;
+        }
         if (data.startsWith("ctq_")) {
           await handleChannelTaskQueueCallback(activeClient, callbackUpdate, data);
           return;
@@ -9325,6 +10299,18 @@ ${buildPathPreviewLine(appliedPath.folder)}
         }
         if (data.startsWith("cs_")) {
           await handleCleanupSettingsCallback(activeClient, callbackUpdate, data);
+          return;
+        }
+        if (data.startsWith("menu_")) {
+          await handleMainMenuCallback(activeClient, callbackUpdate, data);
+          return;
+        }
+        if (data.startsWith("set_")) {
+          await handleSettingsMenuCallback(activeClient, callbackUpdate, data);
+          return;
+        }
+        if (data.startsWith("tgw_")) {
+          await handleWizardCallback(activeClient, callbackUpdate, data);
           return;
         }
       }
@@ -9762,7 +10748,8 @@ function parseRangeHeader(range, size) {
 }
 var FILES_LIST_COLUMNS = `
     id, name, stored_name, type, mime_type, size, thumbnail_path, preview_path,
-    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at
+    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at,
+    telegram_message_link, telegram_source_name
 `;
 function encodeFileCursor(file) {
   return Buffer.from(`${new Date(file.created_at).toISOString()}|${file.id}`, "utf8").toString("base64url");

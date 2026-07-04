@@ -236,6 +236,7 @@ export function buildHelp(): string {
         `  /tasks — 实时传输任务队列`,
         `  /delete <ID或序号> — 删除指定文件`,
         `  /ytdlp <url> — 下载视频链接到存储`,
+        `  /ytdlp\\_cookies — 配置各网站登录 Cookie（下载会员/付费/私密内容）`,
         ``,
         `**🔐 账户**`,
         `  /start — 身份认证 / 开始使用`,
