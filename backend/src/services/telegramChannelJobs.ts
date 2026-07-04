@@ -1018,11 +1018,22 @@ async function runSubscriptionScan(botClient: TelegramClient) {
     if (!userClient || !isTelegramUserClientReady()) return;
 
     const result = await query(
-        `SELECT id, user_id, chat_id, source, last_message_id, folder_override
+        `SELECT id, user_id, chat_id, source, title, last_message_id, folder_override
          FROM telegram_channel_subscriptions
          WHERE enabled = true
          ORDER BY updated_at ASC`
     );
+
+    // 按目标聊天聚合本轮同步结果，扫描结束后合并成一条摘要，避免逐订阅刷屏
+    interface SubSyncSummary {
+        target: unknown;
+        entries: Array<{ label: string; found: number; skipped: number; failed: number; partial: boolean }>;
+        totalFound: number;
+        totalSkipped: number;
+        totalFailed: number;
+        anyPartial: boolean;
+    }
+    const summaryByChat = new Map<string, SubSyncSummary>();
 
     for (const row of result.rows) {
         try {
@@ -1055,11 +1066,40 @@ async function runSubscriptionScan(botClient: TelegramClient) {
             const safeAdvanceId = downloadResult.failed > 0 ? Math.max(lastMessageId, maxProcessedMessageId(downloadResult)) : scannedMaxId;
             await query('UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2', [safeAdvanceId, row.id]);
             if (downloadResult.found > 0) {
-                await botClient.sendMessage(targetChat, { message: `✅ 订阅 ${row.source} 已同步 ${downloadResult.found} 个新文件，跳过 ${downloadResult.skipped} 条${downloadResult.failed ? `，失败 ${downloadResult.failed} 条` : ''}${safeAdvanceId < latestMessageId ? '。本轮达到扫描上限或存在失败项，剩余将在后续继续处理。' : '。'}` }).catch(() => undefined);
+                const key = targetChat?.toString() || String(row.user_id);
+                const summary: SubSyncSummary = summaryByChat.get(key) || { target: targetChat, entries: [], totalFound: 0, totalSkipped: 0, totalFailed: 0, anyPartial: false };
+                const partial = safeAdvanceId < latestMessageId;
+                summary.entries.push({ label: row.title || row.source, found: downloadResult.found, skipped: downloadResult.skipped, failed: downloadResult.failed, partial });
+                summary.totalFound += downloadResult.found;
+                summary.totalSkipped += downloadResult.skipped;
+                summary.totalFailed += downloadResult.failed;
+                summary.anyPartial = summary.anyPartial || partial;
+                summaryByChat.set(key, summary);
             }
         } catch (error) {
             console.error('🤖 Telegram 订阅同步失败:', error);
         }
+    }
+
+    // 合并发送本轮同步摘要（每个目标聊天一条）
+    const SUMMARY_LINE_CAP = 30;
+    for (const summary of summaryByChat.values()) {
+        const header = `✅ 订阅同步完成：${summary.entries.length} 个频道/群组共新增 ${summary.totalFound} 个文件`
+            + (summary.totalSkipped ? `，跳过 ${summary.totalSkipped} 条` : '')
+            + (summary.totalFailed ? `，失败 ${summary.totalFailed} 条` : '')
+            + '。';
+        const shown = summary.entries.slice(0, SUMMARY_LINE_CAP);
+        const lines = shown.map(e => `• ${e.label}：+${e.found}`
+            + (e.skipped ? ` 跳过${e.skipped}` : '')
+            + (e.failed ? ` 失败${e.failed}` : '')
+            + (e.partial ? ' ⏳' : ''));
+        if (summary.entries.length > SUMMARY_LINE_CAP) {
+            lines.push(`…等共 ${summary.entries.length} 个`);
+        }
+        if (summary.anyPartial) {
+            lines.push('', '⏳ 标记的频道本轮达到扫描上限或存在失败项，剩余将在后续继续处理。');
+        }
+        await botClient.sendMessage(summary.target as any, { message: [header, '', ...lines].join('\n') }).catch(() => undefined);
     }
 }
 
