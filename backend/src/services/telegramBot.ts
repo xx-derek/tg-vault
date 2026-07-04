@@ -43,6 +43,7 @@ interface TelegramWizardState {
     kind: TelegramWizardKind;
     step: TelegramWizardStep;
     source?: string;
+    sources?: string[]; // 批量订阅
     startDate?: string;
     tag?: string;
     customFolder?: string;
@@ -86,6 +87,19 @@ function buildTelegramCommentsKeyboard(): Api.ReplyInlineMarkup {
 }
 
 const telegramWizardStates = new Map<number, TelegramWizardState>();
+
+// 频道/群组选择器状态（批量勾选）
+const pickerSelections = new Map<number, Set<string>>();
+
+function getPickerSelections(userId: number): Set<string> {
+    let s = pickerSelections.get(userId);
+    if (!s) { s = new Set(); pickerSelections.set(userId, s); }
+    return s;
+}
+
+function clearPickerSelections(userId: number): void {
+    pickerSelections.delete(userId);
+}
 
 interface RateBucket {
     windowStartedAt: number;
@@ -216,17 +230,25 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
     }
 
     if (state.step === 'path') {
-        const scopeText = state.kind === 'tg_sub_manage' ? (state.subscriptionId ? '这个订阅' : '本次订阅') : '本次下载任务';
+        let scopeText: string;
+        if (state.subscriptionId) {
+            scopeText = '这个订阅';
+        } else if (state.sources) {
+            scopeText = `这 ${state.sources.length} 个频道/群组`;
+        } else {
+            scopeText = '本次订阅';
+        }
+        const sourceLabel = state.sources ? `已选 ${state.sources.length} 个频道/群组` : (state.subscriptionSource || state.source);
         return [
             title,
-            `📍 频道：${state.subscriptionSource || state.source}`,
+            `📍 ${sourceLabel}`,
             '',
             `是否要给${scopeText}单独指定保存目录？`,
             '',
             '直接发送目录，例如：`频道备份/壁纸`',
             '发送 `跳过` / `skip` 使用默认保存路径规则。',
             '',
-            `说明：这里设置的目录只对${scopeText}生效，不会改变全局 /path_rules，也不会影响其它下载。`,
+            `说明：这里设置的目录对${scopeText}统一生效，不会改变全局 /path_rules，也不会影响其它下载。`,
             '发送“取消”可退出。',
         ].join('\n');
     }
@@ -472,6 +494,33 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
                         ].filter(Boolean).join('\n'),
                         buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate),
                     });
+                } else if (state.sources) {
+                    const subs: any[] = [];
+                    const errors: string[] = [];
+                    for (const src of state.sources) {
+                        try {
+                            const sub = await subscribeTelegramChannel(senderId, message.chatId?.toString(), src, state.customFolder);
+                            if (sub) subs.push(sub);
+                        } catch (e) {
+                            errors.push(`${src}: ${e instanceof Error ? e.message : String(e)}`);
+                        }
+                    }
+                    const lines: string[] = [];
+                    if (subs.length > 0) {
+                        lines.push(`✅ 已订阅 ${subs.length} 个频道/群组`);
+                        for (const sub of subs) {
+                            lines.push(`  ${sub.title || sub.source} — ${sub.source}`);
+                        }
+                    }
+                    if (state.customFolder) {
+                        lines.push(`📁 统一保存目录：${state.customFolder}\n${buildPathPreviewLine(state.customFolder)}`);
+                    } else {
+                        lines.push('📁 使用默认保存路径规则');
+                    }
+                    if (errors.length > 0) {
+                        lines.push(`\n⚠️ ${errors.length} 个订阅失败：\n${errors.join('\n')}`);
+                    }
+                    await message.reply({ message: lines.join('\n') });
                 } else {
                     const sub = await subscribeTelegramChannel(senderId, message.chatId?.toString(), state.source!, state.customFolder);
                     await message.reply({
@@ -597,24 +646,37 @@ async function buildDialogPickerView(userId: number, page: number): Promise<{ te
     const pageCount = Math.max(1, Math.ceil(filtered.length / TSUB_PICK_PAGE_SIZE));
     const safePage = Math.min(Math.max(0, page), pageCount - 1);
     const pageItems = filtered.slice(safePage * TSUB_PICK_PAGE_SIZE, (safePage + 1) * TSUB_PICK_PAGE_SIZE);
-    const rows = pageItems.map(item => new Api.KeyboardButtonRow({
-        buttons: [new Api.KeyboardButtonCallback({
-            text: `${item.kind.split(' ')[0]} ${item.title}`.slice(0, 40),
-            data: Buffer.from(`tsub_add_${item.id}`),
-        })],
-    }));
+    const selections = getPickerSelections(userId);
+    const rows = pageItems.map(item => {
+        const selected = selections.has(item.id);
+        return new Api.KeyboardButtonRow({
+            buttons: [new Api.KeyboardButtonCallback({
+                text: `${selected ? '✅ ' : '  '}${item.kind.split(' ')[0]} ${item.title}`.slice(0, 40),
+                data: Buffer.from(`tsub_sel_${safePage}_${item.id}`),
+            })],
+        });
+    });
     const navButtons: Api.KeyboardButtonCallback[] = [];
     if (safePage > 0) navButtons.push(new Api.KeyboardButtonCallback({ text: '⬅️ 上一页', data: Buffer.from(`tsub_pick_${safePage - 1}`) }));
     if (safePage < pageCount - 1) navButtons.push(new Api.KeyboardButtonCallback({ text: '➡️ 下一页', data: Buffer.from(`tsub_pick_${safePage + 1}`) }));
     navButtons.push(new Api.KeyboardButtonCallback({ text: '↩️ 返回订阅管理', data: Buffer.from('tsub_back') }));
     rows.push(new Api.KeyboardButtonRow({ buttons: navButtons }));
+    if (selections.size > 0) {
+        rows.push(new Api.KeyboardButtonRow({
+            buttons: [new Api.KeyboardButtonCallback({
+                text: `✅ 订阅所选（${selections.size} 个）`,
+                data: Buffer.from('tsub_sel_done'),
+            })],
+        }));
+    }
     return {
         text: [
-            '📡 **选择要订阅的频道/群组**',
+            '📡 **选择要订阅的频道/群组**' + (selections.size > 0 ? `（已选 ${selections.size} 个）` : ''),
             '',
+            '点击频道/群组名称可勾选/取消，选择完成后点击底部按钮订阅。',
             filtered.length > 0
-                ? `点击下方按钮即可订阅（第 ${safePage + 1}/${pageCount} 页，共 ${filtered.length} 个，已隐藏 ${items.length - filtered.length} 个已订阅频道）。`
-                : '用户账号尚未加入任何可以订阅的频道/群组（所有已加入的频道/群组均已订阅）。',
+                ? `（第 ${safePage + 1}/${pageCount} 页，共 ${filtered.length} 个，已隐藏 ${items.length - filtered.length} 个已订阅）`
+                : '用户账号尚未加入任何可以订阅的频道/群组（所有已加入的均已订阅）。',
             '',
             '💡 私密频道/群组需要用户账号已加入后才能订阅。',
         ].join('\n'),
@@ -961,6 +1023,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
         return;
     }
     if (data === 'tsub_back') {
+        clearPickerSelections(userId);
         const rowsForPanel = await listTelegramSubscriptions(userId);
         await client.editMessage(update.peer, {
             message: update.msgId,
@@ -968,6 +1031,40 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             buttons: buildSubscriptionActionKeyboard(rowsForPanel),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+        return;
+    }
+
+    // 勾选/取消勾选频道/群组
+    const selMatch = data.match(/^tsub_sel_(\d+)_(-?\d+)$/);
+    if (selMatch) {
+        const page = parseInt(selMatch[1], 10);
+        const dialogId = selMatch[2];
+        const sel = getPickerSelections(userId);
+        if (sel.has(dialogId)) sel.delete(dialogId); else sel.add(dialogId);
+        const view = await buildDialogPickerView(userId, page);
+        await client.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+        return;
+    }
+
+    // 确认批量订阅
+    if (data === 'tsub_sel_done') {
+        const sel = getPickerSelections(userId);
+        if (sel.size === 0) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请先选择至少一个频道或群组', alert: true }));
+            return;
+        }
+        const sources = Array.from(sel);
+        clearPickerSelections(userId);
+        const state: TelegramWizardState = {
+            kind: 'tg_sub_manage',
+            step: 'path',
+            sources,
+            subscriptionSource: `已选 ${sources.length} 个频道/群组`,
+        };
+        telegramWizardStates.set(userId, state);
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已选 ${sources.length} 个，请设置保存目录` }));
         return;
     }
 
