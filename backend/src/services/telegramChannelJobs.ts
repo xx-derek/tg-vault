@@ -3,7 +3,6 @@ import { query } from '../db/index.js';
 import { storageManager } from './storage.js';
 import { getTelegramUserClient, isTelegramUserClientReady } from './telegramUserClient.js';
 import { downloadTelegramChannelRange, getTelegramDownloadPreview, type TelegramDownloadMessageRef } from './telegramUpload.js';
-import { getSetting } from '../utils/settings.js';
 import { extractFileInfo, getEstimatedFileSize } from '../utils/telegramMedia.js';
 
 const SUBSCRIPTION_INTERVAL_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_SUBSCRIPTION_INTERVAL_MS || '300000', 10) || 300_000);
@@ -16,36 +15,6 @@ export const TELEGRAM_COMMENTS_MAX_PER_POST = Math.max(1, parseInt(process.env.T
 let subscriptionTimer: NodeJS.Timeout | null = null;
 let recoveryStarted = false;
 let recoveryRunning = false;
-
-function parseTelegramSourceAllowlist(raw: string | undefined): string[] {
-    return (raw || '')
-        .split(',')
-        .map(item => item.trim())
-        .filter(Boolean)
-        .map(item => normalizeSource(item).toLowerCase());
-}
-
-async function getTelegramSourceAllowlist(): Promise<string[]> {
-    const envList = parseTelegramSourceAllowlist(process.env.TELEGRAM_ALLOWED_SOURCES || process.env.TELEGRAM_SOURCE_ALLOWLIST || '');
-    if (envList.length > 0) return envList;
-    const stored = await getSetting<string>('telegram_allowed_sources', '');
-    return parseTelegramSourceAllowlist(stored || '');
-}
-
-async function assertTelegramSourceAllowed(source: string): Promise<void> {
-    const normalized = normalizeSource(source).toLowerCase();
-    const allowlist = await getTelegramSourceAllowlist();
-    if (allowlist.length === 0) {
-        // Empty allowlist keeps compatibility for public @usernames/links, but refuses numeric/private peers.
-        if (/^-?\d+$/.test(normalized)) {
-            throw new Error('未配置 Telegram 来源白名单，禁止使用数字 ID/私聊/私密群组来源。请配置 TELEGRAM_ALLOWED_SOURCES。');
-        }
-        return;
-    }
-    if (!allowlist.includes(normalized)) {
-        throw new Error(`来源 ${source} 不在 Telegram 下载白名单中`);
-    }
-}
 
 function maxProcessedMessageId(result: { successfulMessageIds: number[]; skippedMessageIds: number[] }): number {
     return Math.max(0, ...result.successfulMessageIds, ...result.skippedMessageIds);
@@ -63,8 +32,51 @@ function requireUserClient(): TelegramClient {
 function normalizeSource(source: string): string {
     const trimmed = source.trim();
     if (!trimmed) throw new Error('频道不能为空');
+    // 私密频道消息链接 t.me/c/<内部ID>[/<话题ID>][/<消息ID>] → -100<内部ID>
+    const privateLink = trimmed.match(/^https?:\/\/t\.me\/c\/(\d+)(?:\/\d+)*\/?(?:\?.*)?$/i);
+    if (privateLink) return `-100${privateLink[1]}`;
     if (trimmed.startsWith('@') || /^-?\d+$/.test(trimmed) || /^https?:\/\//i.test(trimmed)) return trimmed;
     return `@${trimmed}`;
+}
+
+// GramJS 冷启动后实体缓存为空，按数字 ID 解析会话会失败；拉一次对话列表即可填充缓存。
+const ENTITY_NOT_FOUND_PATTERN = /Could not find the input entity|Cannot find any entity|PEER_ID_INVALID|CHANNEL_INVALID/i;
+let lastEntityCacheWarmAt = 0;
+
+function isEntityNotFoundError(error: unknown): boolean {
+    return ENTITY_NOT_FOUND_PATTERN.test(error instanceof Error ? error.message : String(error));
+}
+
+async function warmEntityCache(userClient: TelegramClient): Promise<boolean> {
+    if (Date.now() - lastEntityCacheWarmAt < 60_000) return false;
+    lastEntityCacheWarmAt = Date.now();
+    await userClient.getDialogs({ limit: 200 });
+    return true;
+}
+
+async function resolveSourceEntity(userClient: TelegramClient, source: string): Promise<any> {
+    try {
+        return await userClient.getEntity(source as any);
+    } catch (error) {
+        if (!isEntityNotFoundError(error)) throw error;
+        await warmEntityCache(userClient);
+        return await userClient.getEntity(source as any);
+    }
+}
+
+export async function listTelegramDialogs(keyword?: string, limit = 30): Promise<{ total: number; items: Array<{ id: string; title: string; kind: string }> }> {
+    const userClient = requireUserClient();
+    const dialogs = await userClient.getDialogs({ limit: 200 });
+    const normalizedKeyword = keyword?.trim().toLowerCase();
+    const items = dialogs
+        .filter(dialog => dialog.isChannel || dialog.isGroup)
+        .map(dialog => ({
+            id: dialog.id?.toString() || '',
+            title: dialog.title || dialog.name || '(未命名)',
+            kind: dialog.isChannel && !dialog.isGroup ? '📢 频道' : '👥 群组',
+        }))
+        .filter(item => item.id && (!normalizedKeyword || item.title.toLowerCase().includes(normalizedKeyword)));
+    return { total: items.length, items: items.slice(0, limit) };
 }
 
 function getEntityTitle(entity: any, fallback: string): string {
@@ -102,7 +114,14 @@ function messageMatchesHashtag(message: Api.Message | undefined, normalizedTag: 
 }
 
 async function getLatestMessageId(userClient: TelegramClient, source: string): Promise<number> {
-    const [latest] = await userClient.getMessages(source as any, { limit: 1 });
+    let latest: Api.Message | undefined;
+    try {
+        [latest] = await userClient.getMessages(source as any, { limit: 1 });
+    } catch (error) {
+        if (!isEntityNotFoundError(error)) throw error;
+        await warmEntityCache(userClient);
+        [latest] = await userClient.getMessages(source as any, { limit: 1 });
+    }
     return latest?.id || 0;
 }
 
@@ -487,8 +506,7 @@ async function hydratePendingDownloadRefs(userClient: TelegramClient, jobId: str
 export async function subscribeTelegramChannel(userId: number, chatId: string | undefined, sourceInput: string, folderOverride?: string | null) {
     const userClient = requireUserClient();
     const source = normalizeSource(sourceInput);
-    await assertTelegramSourceAllowed(source);
-    const entity: any = await userClient.getEntity(source as any);
+    const entity: any = await resolveSourceEntity(userClient, source);
     const latestMessageId = await getLatestMessageId(userClient, source);
     const title = getEntityTitle(entity, source);
 
@@ -795,7 +813,6 @@ async function runSegmentedTelegramJob(botClient: TelegramClient, requestMessage
 
 export async function enqueueTelegramDateDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, startDateText: string, endDateText: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
     const source = normalizeSource(sourceInput);
-    await assertTelegramSourceAllowed(source);
     const startDate = parseDateOnly(startDateText);
     const endDate = parseDateOnly(endDateText, true);
     if (startDate > endDate) throw new Error('开始日期不能晚于结束日期');
@@ -839,7 +856,6 @@ async function getMessagesByHashtag(userClient: TelegramClient, source: string, 
 
 export async function enqueueTelegramTagDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, tagInput: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
     const source = normalizeSource(sourceInput);
-    await assertTelegramSourceAllowed(source);
     const tag = normalizeHashtag(tagInput);
 
     const jobId = await createJob(userId, requestMessage.chatId?.toString(), 'tag_download', source, {
@@ -1010,7 +1026,6 @@ async function runSubscriptionScan(botClient: TelegramClient) {
 
     for (const row of result.rows) {
         try {
-            await assertTelegramSourceAllowed(row.source);
             const latestMessageId = await getLatestMessageId(userClient, row.source);
             const lastMessageId = Number(row.last_message_id || 0);
             if (!latestMessageId || latestMessageId <= lastMessageId) continue;

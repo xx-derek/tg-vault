@@ -212,6 +212,7 @@ export function buildHelp(): string {
         `  /ps <目录> — 本会话持续保存到指定目录`,
         `  /pc — 清除自定义目录`,
         `  /tg_sub <频道> — 订阅频道新文件自动同步`,
+        `  /tg_dialogs [关键词] — 列出已加入的频道/群组 ID（订阅私密来源时使用）`,
         `  /tg_download — 按日期/标签下载频道文件`,
         `  /tg_download date <频道> <开始日期> <结束日期> — 按日期下载`,
         `  /tg_download tag <频道> <#标签> — 按标签下载`,

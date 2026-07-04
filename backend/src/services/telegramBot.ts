@@ -14,6 +14,7 @@ import {
     enqueueTelegramDateDownload,
     enqueueTelegramTagDownload,
     listTelegramSubscriptions,
+    listTelegramDialogs,
     type TelegramJobProgressSummary,
     startTelegramJobRecoveryWorker,
     startTelegramSubscriptionWorker,
@@ -560,22 +561,58 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
     return true;
 }
 
-function buildSubscriptionActionKeyboard(rows: any[]): Api.ReplyInlineMarkup | undefined {
-    if (rows.length === 0) return undefined;
+function buildSubscriptionActionKeyboard(rows: any[]): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
-        rows: rows.slice(0, 8).flatMap((row, index) => [
+        rows: [
+            ...rows.slice(0, 8).flatMap((row, index) => [
+                new Api.KeyboardButtonRow({
+                    buttons: [new Api.KeyboardButtonCallback({ text: `${index + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })],
+                }),
+                new Api.KeyboardButtonRow({
+                    buttons: [
+                        new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) }),
+                        new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}`) }),
+                        new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) }),
+                    ],
+                }),
+            ]),
             new Api.KeyboardButtonRow({
-                buttons: [new Api.KeyboardButtonCallback({ text: `${index + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })],
+                buttons: [new Api.KeyboardButtonCallback({ text: '➕ 从已加入的频道/群组中选择订阅', data: Buffer.from('tsub_pick_0') })],
             }),
-            new Api.KeyboardButtonRow({
-                buttons: [
-                    new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) }),
-                    new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}`) }),
-                    new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) }),
-                ],
-            }),
-        ]),
+        ],
     });
+}
+
+const TSUB_PICK_PAGE_SIZE = 8;
+
+async function buildDialogPickerView(page: number): Promise<{ text: string; buttons: Api.ReplyInlineMarkup }> {
+    const { items } = await listTelegramDialogs(undefined, 200);
+    const pageCount = Math.max(1, Math.ceil(items.length / TSUB_PICK_PAGE_SIZE));
+    const safePage = Math.min(Math.max(0, page), pageCount - 1);
+    const pageItems = items.slice(safePage * TSUB_PICK_PAGE_SIZE, (safePage + 1) * TSUB_PICK_PAGE_SIZE);
+    const rows = pageItems.map(item => new Api.KeyboardButtonRow({
+        buttons: [new Api.KeyboardButtonCallback({
+            text: `${item.kind.split(' ')[0]} ${item.title}`.slice(0, 40),
+            data: Buffer.from(`tsub_add_${item.id}`),
+        })],
+    }));
+    const navButtons: Api.KeyboardButtonCallback[] = [];
+    if (safePage > 0) navButtons.push(new Api.KeyboardButtonCallback({ text: '⬅️ 上一页', data: Buffer.from(`tsub_pick_${safePage - 1}`) }));
+    if (safePage < pageCount - 1) navButtons.push(new Api.KeyboardButtonCallback({ text: '➡️ 下一页', data: Buffer.from(`tsub_pick_${safePage + 1}`) }));
+    navButtons.push(new Api.KeyboardButtonCallback({ text: '↩️ 返回订阅管理', data: Buffer.from('tsub_back') }));
+    rows.push(new Api.KeyboardButtonRow({ buttons: navButtons }));
+    return {
+        text: [
+            '📡 **选择要订阅的频道/群组**',
+            '',
+            items.length > 0
+                ? `点击下方按钮即可订阅（第 ${safePage + 1}/${pageCount} 页，共 ${items.length} 个）。`
+                : '用户账号尚未加入任何频道/群组。',
+            '',
+            '💡 私密频道/群组需要用户账号已加入后才能订阅。',
+        ].join('\n'),
+        buttons: new Api.ReplyInlineMarkup({ rows }),
+    };
 }
 
 function buildSubscriptionManagePanel(rows: any[]): string {
@@ -590,7 +627,7 @@ function buildSubscriptionManagePanel(rows: any[]): string {
             ].join('\n')).join('\n')
             : '当前没有启用中的订阅。',
         '',
-        rows.length > 0 ? '可直接点击订阅下方按钮修改/清除专属目录或取消订阅。' : '回复频道用户名或链接可新增订阅。',
+        rows.length > 0 ? '可直接点击订阅下方按钮修改/清除专属目录或取消订阅。' : '点击下方 ➕ 按钮从已加入的频道/群组中选择，或回复频道用户名/链接新增订阅。',
         '回复频道用户名或链接也可新增订阅。',
         '例如：`@channel_username` 或 `https://t.me/channel_username`',
         '',
@@ -916,6 +953,44 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
     }
+    if (data === 'tsub_back') {
+        const rowsForPanel = await listTelegramSubscriptions(userId);
+        await client.editMessage(update.peer, {
+            message: update.msgId,
+            text: buildSubscriptionManagePanel(rowsForPanel),
+            buttons: buildSubscriptionActionKeyboard(rowsForPanel),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+        return;
+    }
+
+    const pickMatch = data.match(/^tsub_pick_(\d+)$/);
+    if (pickMatch) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '正在获取频道/群组列表…' }));
+        try {
+            const view = await buildDialogPickerView(parseInt(pickMatch[1], 10));
+            await client.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
+        } catch (error) {
+            await client.sendMessage(update.peer, { message: `❌ 获取频道/群组列表失败: ${error instanceof Error ? error.message : String(error)}` });
+        }
+        return;
+    }
+
+    const addMatch = data.match(/^tsub_add_(-?\d+)$/);
+    if (addMatch) {
+        const picked = (await listTelegramDialogs(undefined, 200)).items.find(item => item.id === addMatch[1]);
+        const state: TelegramWizardState = {
+            kind: 'tg_sub_manage',
+            step: 'path',
+            source: addMatch[1],
+            subscriptionSource: picked ? `${picked.title}（${addMatch[1]}）` : addMatch[1],
+        };
+        telegramWizardStates.set(userId, state);
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请设置保存目录以完成订阅' }));
+        return;
+    }
+
     const match = data.match(/^tsub_(view|folder|clear|cancel)_(.+)$/);
     if (!match) return;
     const [, action, id] = match;
@@ -1050,6 +1125,7 @@ export async function initTelegramBot(): Promise<void> {
                     new Api.BotCommand({ command: 'start', description: '开始使用 / 验证身份' }),
                     new Api.BotCommand({ command: 'path_rules', description: '保存路径/自定义目录' }),
                     new Api.BotCommand({ command: 'tg_sub', description: '订阅频道自动同步' }),
+                    new Api.BotCommand({ command: 'tg_dialogs', description: '列出已加入的频道/群组 ID' }),
                     new Api.BotCommand({ command: 'tg_download', description: '按日期/标签下载频道文件' }),
                     new Api.BotCommand({ command: 'storage_switch', description: '切换已配置存储源' }),
                     new Api.BotCommand({ command: 'download_workers', description: '设置单文件分片并发' }),
@@ -1294,6 +1370,27 @@ export async function initTelegramBot(): Promise<void> {
 
                     const handledTelegramWizard = await handleTelegramWizardMessage(message, senderId, text);
                     if (handledTelegramWizard) return;
+                }
+
+                if (text === '/tg_dialogs' || text.startsWith('/tg_dialogs ')) {
+                    if (!(await isAuthenticatedAsync(senderId))) {
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
+                        return;
+                    }
+                    const keyword = text.split(/\s+/).slice(1).join(' ').trim() || undefined;
+                    try {
+                        const { total, items } = await listTelegramDialogs(keyword);
+                        if (items.length === 0) {
+                            await message.reply({ message: keyword ? `📭 没有找到标题包含「${keyword}」的频道/群组。` : '📭 用户账号尚未加入任何频道/群组。' });
+                            return;
+                        }
+                        const lines = items.map(item => `${item.kind} ${item.title}\n   \`${item.id}\``);
+                        const header = keyword ? `🔍 匹配「${keyword}」的频道/群组（${items.length}/${total}）：` : `📋 已加入的频道/群组（显示 ${items.length}/${total}，仅取最近 200 个对话）：`;
+                        await message.reply({ message: [header, '', ...lines, '', '复制 ID 后可用 `/tg_sub <ID>` 订阅。'].join('\n') });
+                    } catch (error) {
+                        await message.reply({ message: `❌ 获取对话列表失败: ${error instanceof Error ? error.message : String(error)}` });
+                    }
+                    return;
                 }
 
                 if (text === '/tg_subs' || text === '/tg_subscriptions') {
