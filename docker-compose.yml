@@ -54,8 +54,26 @@ services:
       - TELEGRAM_HEAVY_RATE_MAX=${TELEGRAM_HEAVY_RATE_MAX:-5}
       - TELEGRAM_COMMENTS_MAX_PER_POST=${TELEGRAM_COMMENTS_MAX_PER_POST:-200}
       - TOTP_SECRET=${TOTP_SECRET:-}
+      - TRUST_PROXY=${TRUST_PROXY:-uniquelocal}
     volumes:
       - file-storage:/data
+    networks:
+      - tg-vault-network
+    restart: unless-stopped
+
+  # Cloudflare Tunnel（可选：在 .env 中设置 COMPOSE_PROFILES=cloudflared 和 CLOUDFLARE_TUNNEL_TOKEN 后启用）
+  # Cloudflare 面板中将公共主机名指向 http://frontend:80
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: tg-vault-cloudflared
+    profiles:
+      - cloudflared
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - frontend
+      - backend
     networks:
       - tg-vault-network
     restart: unless-stopped
