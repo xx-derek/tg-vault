@@ -1491,7 +1491,9 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
                     throw err;
                 }
 
-                const msgLink = await buildTelegramMessageLink(client, file.message);
+                // 从解析后的来源消息构建链接：转发到 Bot 的消息其 chatId 是与 Bot 的私聊，
+                // 无法定位原始频道/群组；downloadSource.message 才是账号级客户端解析到的原始来源消息。
+                const msgLink = await buildTelegramMessageLink(downloadSource.client, downloadSource.message);
 
                 await query(`
                     INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)

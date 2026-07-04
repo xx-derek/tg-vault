@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { createPortal } from "react-dom";
-import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw, ExternalLink } from "lucide-react";
+import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw, ExternalLink, FolderClosed } from "lucide-react";
 import type { FileData } from "./FileCard";
 import { Button } from "./Button";
 import { useEffect, useRef, useState } from "react";
@@ -318,7 +318,7 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                                 <h3 className="font-medium text-sm truncate max-w-[50vw]">{file.name}</h3>
                                 <p className="text-xs text-white/60">
                                     {file.size} • {file.date}
-                                    {file.telegram_message_link && (
+                                    {file.telegram_message_link ? (
                                         <a
                                             href={file.telegram_message_link}
                                             target="_blank"
@@ -329,7 +329,15 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                                             <ExternalLink className="h-3 w-3" />
                                             <span>{file.telegram_source_name ? `${file.telegram_source_name} · ${t('sourceMessage')}` : t('sourceMessage')}</span>
                                         </a>
-                                    )}
+                                    ) : file.folder ? (
+                                        <span
+                                            className="inline-flex items-center gap-1 ml-2 text-white/60 align-bottom max-w-[40vw]"
+                                            title={file.folder}
+                                        >
+                                            <FolderClosed className="h-3 w-3 shrink-0" />
+                                            <span className="truncate">{file.folder}</span>
+                                        </span>
+                                    ) : null}
                                 </p>
                             </div>
                         </div>
