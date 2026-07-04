@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } fro
 import { AppLayout } from "./components/layout/AppLayout";
 import { Button } from "./components/ui/Button";
 import { FileCard } from "./components/ui/FileCard";
-import { FolderCard, type FolderData } from "./components/ui/FolderCard";
+import { FolderCard, FolderListItem, type FolderData } from "./components/ui/FolderCard";
 import { UploadZone } from "./components/ui/UploadZone";
 import { Search, RefreshCw, ArrowLeft, ChevronDown, ChevronRight, CheckSquare, Cloud, HardDrive, Database, Package, Network, FolderPlus } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -1029,17 +1029,31 @@ function App() {
                                 transition={{ duration: 0.2 }}
                                 layout
                               >
-                                <FolderCard
-                                  folder={folder}
-                                  onClick={() => enterFolder(folder.name)}
-                                  onRename={() => setRenamingFolder(folder.name)}
-                                  onToggleFavorite={() => handleToggleFolderFavorite(folder.name)}
-                                  onMove={() => setMovingFolder(folder.name)}
-                                  onDelete={() => handleBatchDelete([], [folder.name])}
-                                  isSelectionMode={isSelectionMode}
-                                  isSelected={selectedFolderNames.includes(folder.name)}
-                                  onSelect={toggleFolderSelection}
-                                />
+                                {viewMode === "grid" ? (
+                                  <FolderCard
+                                    folder={folder}
+                                    onClick={() => enterFolder(folder.name)}
+                                    onRename={() => setRenamingFolder(folder.name)}
+                                    onToggleFavorite={() => handleToggleFolderFavorite(folder.name)}
+                                    onMove={() => setMovingFolder(folder.name)}
+                                    onDelete={() => handleBatchDelete([], [folder.name])}
+                                    isSelectionMode={isSelectionMode}
+                                    isSelected={selectedFolderNames.includes(folder.name)}
+                                    onSelect={toggleFolderSelection}
+                                  />
+                                ) : (
+                                  <FolderListItem
+                                    folder={folder}
+                                    onClick={() => enterFolder(folder.name)}
+                                    onRename={() => setRenamingFolder(folder.name)}
+                                    onToggleFavorite={() => handleToggleFolderFavorite(folder.name)}
+                                    onMove={() => setMovingFolder(folder.name)}
+                                    onDelete={() => handleBatchDelete([], [folder.name])}
+                                    isSelectionMode={isSelectionMode}
+                                    isSelected={selectedFolderNames.includes(folder.name)}
+                                    onSelect={toggleFolderSelection}
+                                  />
+                                )}
                               </motion.div>
                             ))}
                           </AnimatePresence>

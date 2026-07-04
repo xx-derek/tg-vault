@@ -25,6 +25,150 @@ const getFileTypeIcon = (type: FileData["type"]) => {
     }
 };
 
+export const FolderListItem = ({
+    folder,
+    onClick,
+    onRename,
+    onToggleFavorite,
+    onDelete,
+    onMove,
+    isSelectionMode = false,
+    isSelected = false,
+    onSelect
+}: {
+    folder: FolderData;
+    onClick: () => void;
+    onRename?: () => void;
+    onToggleFavorite?: () => void;
+    onDelete?: () => void;
+    onMove?: () => void;
+    isSelectionMode?: boolean;
+    isSelected?: boolean;
+    onSelect?: (name: string) => void;
+}) => {
+    const { t } = useTranslation();
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+
+    const coverFile = folder.coverFile;
+    const thumbnailSrc = coverFile?.thumbnailUrl || (coverFile?.type === 'image' ? coverFile?.previewUrl : undefined);
+
+    const typeCounts = folder.files.reduce((acc, file) => {
+        if (file.name !== '.folder') {
+            acc[file.type] = (acc[file.type] || 0) + 1;
+        }
+        return acc;
+    }, {} as Record<string, number>);
+
+    const isFavorite = folder.files.length > 0 && folder.files.every(f => !!f.is_favorite);
+
+    const handleClick = () => {
+        if (isSelectionMode) {
+            onSelect?.(folder.name);
+        } else {
+            onClick();
+        }
+    };
+
+    const handleContextMenu = (e: any) => {
+        if (isSelectionMode) return;
+        if (e.preventDefault) e.preventDefault();
+        e.stopPropagation?.();
+        const clientX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+        const clientY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+        setContextMenu({ x: clientX, y: clientY });
+    };
+
+    const longPressHandlers = useLongPress({
+        onLongPress: (e) => handleContextMenu(e),
+        onClick: () => handleClick(),
+        threshold: 500
+    });
+
+    return (
+        <>
+            <div
+                className={`flex min-h-[64px] items-center gap-4 p-3 rounded-xl border ${isSelected ? 'border-primary bg-primary/5' : 'border-border bg-card'} shadow-sm cursor-pointer group hover:bg-muted/50 transition-colors touch-manipulation select-none`}
+                {...(!isSelectionMode ? longPressHandlers : { onClick: handleClick })}
+                onContextMenu={handleContextMenu}
+            >
+                {isSelectionMode && (
+                    <div className={`h-5 w-5 rounded-full border-2 flex items-center justify-center ${isSelected ? 'bg-primary border-primary' : 'border-muted-foreground/30'}`}>
+                        {isSelected && <div className="h-2 w-2 bg-white rounded-full" />}
+                    </div>
+                )}
+                <div className="h-12 w-12 rounded-lg bg-gradient-to-br from-primary/5 to-primary/15 flex items-center justify-center overflow-hidden shrink-0">
+                    {thumbnailSrc ? (
+                        <img src={thumbnailSrc} alt={folder.name} className="h-full w-full object-cover" loading="lazy" />
+                    ) : (
+                        <Folder className="h-6 w-6 text-primary/50" />
+                    )}
+                </div>
+                <div className="flex-1 min-w-0">
+                    <h4 className="font-medium truncate group-hover:text-primary transition-colors flex items-center gap-1.5">
+                        {folder.name}
+                        {isFavorite && <Star className="h-3.5 w-3.5 text-yellow-500 fill-current shrink-0" />}
+                    </h4>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{folder.fileCount} 个文件</span>
+                        {folder.latestDate && (
+                            <>
+                                <span className="text-[10px] text-muted-foreground/60">•</span>
+                                <span>{folder.latestDate}</span>
+                            </>
+                        )}
+                    </div>
+                </div>
+                <div className="hidden sm:flex gap-1.5">
+                    {Object.entries(typeCounts).map(([type, count]) => (
+                        <div
+                            key={type}
+                            className="bg-muted rounded-full px-2 py-0.5 flex items-center gap-1"
+                            title={`${count} ${type}`}
+                        >
+                            {getFileTypeIcon(type as FileData["type"])}
+                            <span className="text-[10px] font-medium text-muted-foreground tabular-nums">{count}</span>
+                        </div>
+                    ))}
+                </div>
+                {!isSelectionMode && (
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-11 w-11 rounded-full touch-manipulation"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setContextMenu({ x: rect.left, y: rect.bottom + 5 });
+                        }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onMouseUp={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onTouchEnd={(e) => e.stopPropagation()}
+                        aria-label={`更多操作：${folder.name}`}
+                    >
+                        <MoreVertical className="h-5 w-5" />
+                    </Button>
+                )}
+            </div>
+
+            <ContextMenu
+                x={contextMenu?.x ?? 0}
+                y={contextMenu?.y ?? 0}
+                isOpen={!!contextMenu}
+                onClose={() => setContextMenu(null)}
+                items={createFolderMenuItems(
+                    t,
+                    onRename,
+                    onToggleFavorite,
+                    isFavorite,
+                    onDelete,
+                    onMove
+                )}
+            />
+        </>
+    );
+};
+
 export const FolderCard = ({
     folder,
     onClick,
