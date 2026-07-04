@@ -208,11 +208,15 @@ TG Vault 有两层 Telegram 下载并发：
 
 ## 🧭 Telegram Bot 命令
 
+> 💡 **推荐用法**：发送 `/menu` 打开按钮式主菜单，涵盖订阅 / 下载 / 任务 / 存储 / 设置 / 帮助，无需记忆命令；已认证用户在输入框上方还会有常驻快捷键盘。下面的命令仍可直接输入，多数也能在 `/menu` 里点按完成。为避免与 `/menu` 重复，Telegram 的 `/` 命令菜单只保留 `/start`、`/menu`、`/tg_dialogs`、`/ytdlp`、`/setup_2fa`、`/help`；其余命令输入后依然有效。
+
 ### 基础命令
 
 | 命令 | 说明 | 依赖账号级下载器 |
 | :--- | :--- | :---: |
 | `/start` | 身份认证 / 开始使用 | 否 |
+| `/menu` | 按钮式主菜单（全部功能入口） | 否 |
+| `/settings` | 设置面板（并发 / 去重 / 清理 / 路径 / 存储源） | 否 |
 | `/help` | 查看 Bot 内置帮助 | 否 |
 | `/setup_2fa` | 配置双重验证 (TOTP) | 否 |
 | `/storage` | 查看存储统计，可清理本地文件 | 否 |
@@ -248,11 +252,14 @@ TG Vault 有两层 Telegram 下载并发：
 | `/tg_download` | 打开按日期 / 标签下载向导；别名 `/tg_dl` |
 | `/tg_download date <频道> <开始日期> <结束日期>` | 按日期范围抓取媒体，例如 `/tg_download date @channel 2026-01-01 2026-01-31` |
 | `/tg_download tag <频道> <#标签>` | 按标签抓取媒体，例如 `/tg_download tag @channel #壁纸` |
-| `/tg_sub` | 打开订阅管理向导；别名 `/tg_subscribe` |
+| `/tg_sub` | 打开订阅管理面板（分页、二级详情菜单、多选批量订阅）；别名 `/tg_subscribe` |
 | `/tg_sub <频道>` | 添加频道/群组订阅 |
+| `/tg_dialogs [关键词]` | 列出账号已加入的频道/群组及其 ID，便于订阅私密来源 |
 | `/tg_subs` | 查看订阅列表；别名 `/tg_subscriptions` |
 | `/tg_unsub <频道或订阅ID前缀>` | 取消订阅；别名 `/tg_unsubscribe` |
 | `/tg_retry [数量] [任务ID]` | 重试最近失败的 Telegram 下载任务 |
+
+订阅管理面板支持翻页；点击任一订阅进入二级菜单可修改/清除专属目录或取消订阅；点击「➕ 从已加入的频道/群组中选择订阅」可多选批量订阅，已订阅的频道会自动隐藏。
 
 兼容旧命令：`/tg_date` 和 `/tg_tag` 仍可用，但 README 推荐统一使用 `/tg_download date` / `/tg_download tag`。
 

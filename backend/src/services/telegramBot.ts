@@ -627,17 +627,22 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
             try {
                 if (state.subscriptionId) {
                     const sub = await updateTelegramSubscriptionFolder(senderId, state.subscriptionId, state.customFolder || null);
-                    const rowsAfterUpdate = await listTelegramSubscriptions(senderId);
-                    const updatePage = resolveSubscriptionPage(senderId, rowsAfterUpdate);
-                    await message.reply({
-                        message: [
-                            sub ? `✅ 已更新订阅目录：${sub.title || sub.source}` : '❌ 未找到该订阅',
-                            sub && state.customFolder ? `📁 专属目录：${state.customFolder}\n${buildPathPreviewLine(state.customFolder)}` : '📁 保存策略：默认自动分类',
-                            '',
-                            buildSubscriptionManagePanel(rowsAfterUpdate, updatePage),
-                        ].filter(Boolean).join('\n'),
-                        buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate, updatePage),
-                    });
+                    const updated = sub ? await findSubscriptionRow(senderId, state.subscriptionId) : null;
+                    const header = [
+                        sub ? `✅ 已更新订阅目录：${sub.title || sub.source}` : '❌ 未找到该订阅',
+                        sub && state.customFolder ? `📁 专属目录：${state.customFolder}\n${buildPathPreviewLine(state.customFolder)}` : '📁 保存策略：默认自动分类',
+                    ].filter(Boolean).join('\n');
+                    if (updated) {
+                        const detail = buildSubscriptionDetailView(updated);
+                        await message.reply({ message: `${header}\n\n${detail.text}`, buttons: detail.buttons });
+                    } else {
+                        const rowsAfterUpdate = await listTelegramSubscriptions(senderId);
+                        const updatePage = resolveSubscriptionPage(senderId, rowsAfterUpdate);
+                        await message.reply({
+                            message: [header, '', buildSubscriptionManagePanel(rowsAfterUpdate, updatePage)].join('\n'),
+                            buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate, updatePage),
+                        });
+                    }
                 } else if (state.sources) {
                     const subs: any[] = [];
                     const errors: string[] = [];
@@ -787,20 +792,11 @@ function buildSubscriptionActionKeyboard(rows: any[], page = 0): Api.ReplyInline
     if (safePage < pageCount - 1) navButtons.push(new Api.KeyboardButtonCallback({ text: '➡️ 下一页', data: Buffer.from(`tsub_page_${safePage + 1}`) }));
     return new Api.ReplyInlineMarkup({
         rows: [
-            ...pageRows.flatMap((row, index) => {
+            ...pageRows.map((row, index) => {
                 const globalIndex = safePage * SUBSCRIPTION_PAGE_SIZE + index;
-                return [
-                    new Api.KeyboardButtonRow({
-                        buttons: [new Api.KeyboardButtonCallback({ text: `${globalIndex + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })],
-                    }),
-                    new Api.KeyboardButtonRow({
-                        buttons: [
-                            new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) }),
-                            new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}`) }),
-                            new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) }),
-                        ],
-                    }),
-                ];
+                return new Api.KeyboardButtonRow({
+                    buttons: [new Api.KeyboardButtonCallback({ text: `${globalIndex + 1}. ${row.enabled ? '' : '⏸️ '}${row.title || row.source}`, data: Buffer.from(`tsub_open_${row.id}`) })],
+                });
             }),
             ...(navButtons.length > 0 ? [new Api.KeyboardButtonRow({ buttons: navButtons })] : []),
             new Api.KeyboardButtonRow({
@@ -808,6 +804,34 @@ function buildSubscriptionActionKeyboard(rows: any[], page = 0): Api.ReplyInline
             }),
         ],
     });
+}
+
+// 单个订阅的二级菜单（详情 + 操作）
+function buildSubscriptionDetailView(row: any): { text: string; buttons: Api.ReplyInlineMarkup } {
+    const detailRows: Api.KeyboardButtonRow[] = [
+        new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) })] }),
+    ];
+    if (row.folder_override) {
+        detailRows.push(new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🧹 清除专属目录', data: Buffer.from(`tsub_clear_${row.id}`) })] }));
+    }
+    detailRows.push(new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🗑 取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) })] }));
+    detailRows.push(new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '↩️ 返回订阅列表', data: Buffer.from('tsub_back') })] }));
+    return {
+        text: [
+            '📡 **订阅详情**',
+            '',
+            `${row.enabled ? '✅' : '⏸️'} ${row.title || row.source}`,
+            `📍 来源：${row.source}`,
+            `🆔 已同步至消息 ID：${row.last_message_id || 0}`,
+            row.folder_override ? `📁 专属目录：${row.folder_override}` : '📁 保存策略：默认自动分类',
+        ].join('\n'),
+        buttons: new Api.ReplyInlineMarkup({ rows: detailRows }),
+    };
+}
+
+async function findSubscriptionRow(userId: number, id: string): Promise<any | null> {
+    const rows = await listTelegramSubscriptions(userId);
+    return rows.find(r => String(r.id) === id) || null;
 }
 
 const TSUB_PICK_PAGE_SIZE = 8;
@@ -883,7 +907,7 @@ function buildSubscriptionManagePanel(rows: any[], page = 0): string {
             }).join('\n')
             : '当前没有启用中的订阅。',
         '',
-        rows.length > 0 ? '可直接点击订阅下方按钮修改/清除专属目录或取消订阅。' : '点击下方 ➕ 按钮从已加入的频道/群组中选择，或回复频道用户名/链接新增订阅。',
+        rows.length > 0 ? '点击任一订阅可进入详情菜单，修改/清除专属目录或取消订阅。' : '点击下方 ➕ 按钮从已加入的频道/群组中选择，或回复频道用户名/链接新增订阅。',
         '回复频道用户名或链接也可新增订阅。',
         '例如：`@channel_username` 或 `https://t.me/channel_username`',
         '',
@@ -1312,22 +1336,27 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
         return;
     }
 
-    const match = data.match(/^tsub_(view|folder|clear|cancel)_(.+)$/);
+    // 点击某个订阅 → 进入二级详情菜单
+    const openMatch = data.match(/^tsub_open_(.+)$/);
+    if (openMatch) {
+        const row = await findSubscriptionRow(userId, openMatch[1]);
+        if (!row) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '订阅不存在或已取消', alert: true }));
+            return;
+        }
+        const detail = buildSubscriptionDetailView(row);
+        await client.editMessage(update.peer, { message: update.msgId, text: detail.text, buttons: detail.buttons });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+        return;
+    }
+
+    const match = data.match(/^tsub_(folder|clear|cancel)_(.+)$/);
     if (!match) return;
     const [, action, id] = match;
     const rows = await listTelegramSubscriptions(userId);
     const target = rows.find(row => String(row.id) === id);
     if (!target) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '订阅不存在或已取消', alert: true }));
-        return;
-    }
-
-    if (action === 'view') {
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({
-            queryId: update.queryId,
-            message: target.folder_override ? `专属目录：${target.folder_override}` : '当前使用默认保存路径',
-            alert: true,
-        }));
         return;
     }
 
@@ -1348,13 +1377,19 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
 
     if (action === 'clear') {
         await updateTelegramSubscriptionFolder(userId, id, null);
-        const rowsAfterClear = await listTelegramSubscriptions(userId);
-        const clearPage = resolveSubscriptionPage(userId, rowsAfterClear);
-        await client.editMessage(update.peer, {
-            message: update.msgId,
-            text: buildSubscriptionManagePanel(rowsAfterClear, clearPage),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterClear, clearPage),
-        });
+        const updated = await findSubscriptionRow(userId, id);
+        if (updated) {
+            const detail = buildSubscriptionDetailView(updated);
+            await client.editMessage(update.peer, { message: update.msgId, text: detail.text, buttons: detail.buttons });
+        } else {
+            const rowsAfterClear = await listTelegramSubscriptions(userId);
+            const clearPage = resolveSubscriptionPage(userId, rowsAfterClear);
+            await client.editMessage(update.peer, {
+                message: update.msgId,
+                text: buildSubscriptionManagePanel(rowsAfterClear, clearPage),
+                buttons: buildSubscriptionActionKeyboard(rowsAfterClear, clearPage),
+            });
+        }
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已清除专属目录' }));
         return;
     }
@@ -1446,15 +1481,10 @@ export async function initTelegramBot(): Promise<void> {
                 langCode: 'zh',
                 commands: [
                     new Api.BotCommand({ command: 'start', description: '开始使用 / 验证身份' }),
-                    new Api.BotCommand({ command: 'menu', description: '主菜单（按钮式操作，无需记命令）' }),
-                    new Api.BotCommand({ command: 'tg_sub', description: '订阅频道自动同步' }),
-                    new Api.BotCommand({ command: 'tg_download', description: '下载频道文件（按日期/标签）' }),
+                    new Api.BotCommand({ command: 'menu', description: '主菜单（订阅/下载/任务/存储/设置/帮助）' }),
                     new Api.BotCommand({ command: 'tg_dialogs', description: '列出已加入的频道/群组 ID' }),
-                    new Api.BotCommand({ command: 'tasks', description: '查看任务状态' }),
-                    new Api.BotCommand({ command: 'storage', description: '存储统计 / 清理本地文件' }),
-                    new Api.BotCommand({ command: 'settings', description: '设置（并发 / 去重 / 清理 / 路径 / 存储源）' }),
-                    new Api.BotCommand({ command: 'setup_2fa', description: '配置双重验证 (2FA)' }),
                     new Api.BotCommand({ command: 'ytdlp', description: '解析并下载链接到存储源' }),
+                    new Api.BotCommand({ command: 'setup_2fa', description: '配置双重验证 (2FA)' }),
                     new Api.BotCommand({ command: 'help', description: '显示完整帮助' }),
                 ]
             }));
