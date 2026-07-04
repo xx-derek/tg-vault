@@ -21,6 +21,10 @@ export const authenticatedUsers = new Map<number, { authenticatedAt: Date }>();
 // Password input state
 export const passwordInputState = new Map<number, { password: string }>();
 
+// yt-dlp 登录 cookies 配置流程状态（跨 telegramBot 文本处理与 telegramUpload 文件处理共享）
+// step 'host' 等待用户发送域名；step 'value' 等待用户上传 cookies.txt 或粘贴其内容。
+export const cookieEntryState = new Map<number, { step: 'host' | 'value'; host?: string }>();
+
 export async function revokeAuthenticatedUser(userId: number): Promise<void> {
     authenticatedUsers.delete(userId);
     try {

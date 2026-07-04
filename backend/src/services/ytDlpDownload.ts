@@ -10,6 +10,7 @@ import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
 import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
+import { getCookiesForUrl } from '../utils/ytdlpCookies.js';
 
 type YtDlpTaskStatus = 'pending' | 'active' | 'success' | 'failed';
 
@@ -89,10 +90,24 @@ function selectPrimaryOutputFile(taskDir: string): { filePath: string; fileName:
 async function runYtDlpDownload(url: string, taskDir: string): Promise<void> {
     ensureDir(taskDir);
 
+    // 若该网站配置了登录 cookies，则写入任务目录（0600），并通过 --cookies 传给 yt-dlp。
+    // 任务结束时随 taskDir 一并删除（safeRmDir），cookies 不会遗留。
+    let cookiesFile: string | null = null;
+    try {
+        const cookiesText = await getCookiesForUrl(url);
+        if (cookiesText) {
+            cookiesFile = path.join(taskDir, 'cookies.txt');
+            fs.writeFileSync(cookiesFile, cookiesText, { mode: 0o600 });
+        }
+    } catch (e) {
+        console.error('🍪 读取 ytdlp cookies 失败:', e);
+    }
+
     const outputTemplate = path.join(taskDir, '%(title).200s-%(id)s.%(ext)s');
     const args = [
         '--no-playlist',
         '--newline',
+        ...(cookiesFile ? ['--cookies', cookiesFile] : []),
         '--merge-output-format',
         'mp4',
         '-o',

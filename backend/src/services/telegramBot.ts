@@ -5,7 +5,8 @@ import { Raw } from 'telegram/events/index.js';
 import fs from 'fs';
 import path from 'path';
 import { storageManager } from '../services/storage.js';
-import { authenticatedUsers, passwordInputState, isAuthenticatedAsync, loadAuthenticatedUsers, persistAuthenticatedUser, userStates, TelegramUserState } from './telegramState.js';
+import { authenticatedUsers, passwordInputState, cookieEntryState, isAuthenticatedAsync, loadAuthenticatedUsers, persistAuthenticatedUser, userStates, TelegramUserState } from './telegramState.js';
+import { listCookieHosts, setCookiesForHost, deleteCookiesForHost, normalizeCookieHost, looksLikeCookies, YTDLP_COOKIE_MAX_BYTES } from '../utils/ytdlpCookies.js';
 import { is2FAEnabled, generateOTPAuthUrl, verifyTOTP, activate2FA } from '../utils/security.js';
 import { handleStart, handleHelp, handleStorage, handleStorageSwitch, handleStorageSwitchCallback, handleDelete, handleDeleteConfirmCallback, handleTasks, handleStopTasks, handlePauseTasks, handleResumeTasks, handleCancelTask, handleChannelTaskQueueCallback, handleRetryFailedTasks, handleDownloadWorkers, handleDownloadWorkersCallback, handleFileConcurrency, handleFileConcurrencyCallback, handleStorageCleanupCallback, handlePathRules, handlePathOnce, handlePathSession, handlePathClear, handlePathRulesCallback, handleDuplicateMode, handleDuplicateModeCallback, handleCleanupSettings, handleCleanupSettingsCallback } from './telegramCommands.js';
 import { handleFileUpload, handleCleanupCallback, pauseDownloadTasks, resumeDownloadTasks, resolveTaskChatIdForControl, refreshSilentProgress, cancelSilentTask, canControlTask, loadFileDownloadConcurrencySetting } from './telegramUpload.js';
@@ -165,6 +166,7 @@ function buildSettingsMenu(): { text: string; buttons: Api.ReplyInlineMarkup } {
                 new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🧹 自动清理设置', data: Buffer.from('set_cleanup') })] }),
                 new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '📁 保存路径规则', data: Buffer.from('set_path') })] }),
                 new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '💾 切换存储源', data: Buffer.from('set_storage') })] }),
+                new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🍪 ytdlp 登录 Cookie', data: Buffer.from('set_ytdlp_cookies') })] }),
                 new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '🏠 返回主菜单', data: Buffer.from('menu_home') })] }),
             ],
         }),
@@ -224,7 +226,137 @@ async function handleSettingsMenuCallback(activeClient: TelegramClient, update: 
         case 'set_cleanup': await handleCleanupSettings(proxy); return;
         case 'set_path': await handlePathRules(proxy); return;
         case 'set_storage': await handleStorageSwitch(proxy); return;
+        case 'set_ytdlp_cookies': await handleYtdlpCookiesCommand(proxy); return;
     }
+}
+
+// ============ yt-dlp 登录 Cookie 配置 ============
+
+async function buildYtdlpCookiesView(): Promise<{ text: string; buttons: Api.ReplyInlineMarkup }> {
+    const hosts = await listCookieHosts();
+    const lines = [
+        '🍪 **yt-dlp 登录 Cookie**',
+        '',
+        '为需要登录的网站配置 Cookie，`/ytdlp` 下载该网站链接时会自动带上，可下载会员/付费/私密内容。',
+    ];
+    const rows: Api.KeyboardButtonRow[] = [];
+    if (hosts.length === 0) {
+        lines.push('', '当前没有已配置的网站。');
+    } else {
+        lines.push('', '已配置网站（点击可删除）：');
+        for (const host of hosts) {
+            rows.push(new Api.KeyboardButtonRow({
+                buttons: [new Api.KeyboardButtonCallback({ text: `🗑 ${host}`, data: Buffer.from(`ytc_del_${host}`) })],
+            }));
+        }
+    }
+    rows.push(new Api.KeyboardButtonRow({
+        buttons: [new Api.KeyboardButtonCallback({ text: '➕ 添加网站', data: Buffer.from('ytc_add') })],
+    }));
+    rows.push(new Api.KeyboardButtonRow({
+        buttons: [new Api.KeyboardButtonCallback({ text: '❌ 关闭', data: Buffer.from('ytc_close') })],
+    }));
+    return { text: lines.join('\n'), buttons: new Api.ReplyInlineMarkup({ rows }) };
+}
+
+async function handleYtdlpCookiesCommand(message: any): Promise<void> {
+    // 打开面板时清掉可能残留的录入状态
+    if (typeof message.senderId?.toJSNumber === 'function') {
+        cookieEntryState.delete(message.senderId.toJSNumber());
+    }
+    const view = await buildYtdlpCookiesView();
+    await message.reply({ message: view.text, buttons: view.buttons });
+}
+
+async function handleYtdlpCookiesCallback(activeClient: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) {
+        await activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    const ack = (msg?: string, alert = false) => activeClient.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, ...(msg ? { message: msg, alert } : {}) }));
+    const rerender = async () => {
+        const view = await buildYtdlpCookiesView();
+        await activeClient.editMessage(update.peer, { message: update.msgId, text: view.text, buttons: view.buttons });
+    };
+
+    if (data === 'ytc_add') {
+        cookieEntryState.set(userId, { step: 'host' });
+        await ack('添加网站');
+        await activeClient.sendMessage(update.userId, {
+            message: '请发送要配置 Cookie 的网站域名（例如 `youtube.com`，也可直接粘贴该站的一个链接）。',
+            buttons: new Api.ReplyInlineMarkup({ rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '❌ 取消', data: Buffer.from('ytc_cancel') })] })] }),
+        });
+        return;
+    }
+    if (data === 'ytc_cancel') {
+        cookieEntryState.delete(userId);
+        await ack('已取消');
+        await activeClient.sendMessage(update.userId, { message: '已取消 Cookie 配置。' });
+        return;
+    }
+    if (data === 'ytc_close') {
+        cookieEntryState.delete(userId);
+        await ack('已关闭');
+        await activeClient.editMessage(update.peer, { message: update.msgId, text: '🍪 已关闭 Cookie 配置面板。', buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+        return;
+    }
+    if (data.startsWith('ytc_del_')) {
+        const host = data.slice('ytc_del_'.length);
+        const removed = await deleteCookiesForHost(host);
+        await ack(removed ? `已删除 ${host}` : '未找到该网站');
+        await rerender();
+        return;
+    }
+    await ack();
+}
+
+// 处理 Cookie 配置流程中的文本消息（域名 / 粘贴的 cookies 内容）。
+// 命中返回 true，未处于该流程返回 false 以便继续后续路由。
+async function handleCookieEntryMessage(message: Api.Message, senderId: number, text: string): Promise<boolean> {
+    const entry = cookieEntryState.get(senderId);
+    if (!entry) return false;
+
+    if (entry.step === 'host') {
+        const host = normalizeCookieHost(text);
+        if (!host) {
+            await message.reply({ message: '❌ 无法识别域名，请重新发送，例如 `youtube.com`。' });
+            return true;
+        }
+        cookieEntryState.set(senderId, { step: 'value', host });
+        await message.reply({
+            message: [
+                `网站：\`${host}\``,
+                '',
+                '现在请把该网站的 Cookie 发给我，二选一：',
+                '① （推荐）上传导出的 `cookies.txt` 文件；',
+                '② 直接粘贴 cookies.txt 的完整内容作为文本。',
+                '',
+                '提示：请用浏览器扩展（如 “Get cookies.txt”）导出 Netscape 格式；上传文件比粘贴更可靠（粘贴可能丢失制表符）。',
+            ].join('\n'),
+            buttons: new Api.ReplyInlineMarkup({ rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '❌ 取消', data: Buffer.from('ytc_cancel') })] })] }),
+        });
+        return true;
+    }
+
+    // entry.step === 'value'：把文本当作 cookies 内容
+    const host = entry.host!;
+    const content = text;
+    if (Buffer.byteLength(content, 'utf8') > YTDLP_COOKIE_MAX_BYTES) {
+        await message.reply({ message: '❌ 内容过大，请改用上传 `cookies.txt` 文件的方式。' });
+        return true;
+    }
+    try {
+        await setCookiesForHost(host, content);
+        cookieEntryState.delete(senderId);
+        const warn = looksLikeCookies(content) ? '' : '\n\n⚠️ 内容看起来不像标准 cookies.txt，若下载仍失败，请改用上传文件方式。';
+        const view = await buildYtdlpCookiesView();
+        await message.reply({ message: `✅ 已保存 \`${host}\` 的 Cookie。${warn}` });
+        await message.reply({ message: view.text, buttons: view.buttons });
+    } catch (e) {
+        await message.reply({ message: `❌ 保存失败：${e instanceof Error ? e.message : String(e)}` });
+    }
+    return true;
 }
 
 // 保存目录步骤的按钮：让用户无需输入文字即可继续（使用默认目录）或取消
@@ -1712,6 +1844,16 @@ export async function initTelegramBot(): Promise<void> {
                     return;
                 }
 
+                // /ytdlp_cookies | /ytdlp_login — 管理各网站登录 Cookie
+                if (/^\s*\/ytdlp_(?:cookies|login)(?:@\w+)?\s*$/i.test(text)) {
+                    if (!(await isAuthenticatedAsync(senderId))) {
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
+                        return;
+                    }
+                    await handleYtdlpCookiesCommand(message);
+                    return;
+                }
+
                 // /ytdlp <url>
                 {
                     const match = text.match(/^\s*\/ytdlp(?:@\w+)?(?:\s+([\s\S]*))?\s*$/i);
@@ -1785,6 +1927,10 @@ export async function initTelegramBot(): Promise<void> {
                 }
 
                 if (!text.startsWith('/')) {
+                    // yt-dlp 登录 Cookie 配置流程（域名 / 粘贴内容）优先处理
+                    const handledCookieEntry = await handleCookieEntryMessage(message, senderId, text);
+                    if (handledCookieEntry) return;
+
                     if (isCancelInput(text)) {
                         const pendingMode = getPendingTelegramPathInput(chatId.toString(), senderId);
                         if (pendingMode) {
@@ -2248,6 +2394,12 @@ export async function initTelegramBot(): Promise<void> {
                 // 处理频道订阅管理回调
                 if (data.startsWith('tsub_')) {
                     await handleTelegramSubscriptionCallback(callbackUpdate, data);
+                    return;
+                }
+
+                // 处理 yt-dlp 登录 Cookie 配置回调
+                if (data.startsWith('ytc_')) {
+                    await handleYtdlpCookiesCallback(activeClient, callbackUpdate, data);
                     return;
                 }
 
