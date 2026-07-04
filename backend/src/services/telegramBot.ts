@@ -237,6 +237,23 @@ function buildPathStepKeyboard(): Api.ReplyInlineMarkup {
     });
 }
 
+// 仅含取消的按钮：用于需要文字输入的步骤（频道、标签、日期），确保无需再靠文字“取消”退出
+function buildWizardCancelKeyboard(): Api.ReplyInlineMarkup {
+    return new Api.ReplyInlineMarkup({
+        rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonCallback({ text: '❌ 取消', data: Buffer.from('tgw_cancel') })] })],
+    });
+}
+
+// 根据向导当前步骤返回合适的按钮，保证每一步都能通过按钮操作/退出
+function wizardStepButtons(state: TelegramWizardState): Api.ReplyInlineMarkup {
+    switch (state.step) {
+        case 'mode': return buildTelegramDownloadModeKeyboard();
+        case 'comments': return buildTelegramCommentsKeyboard();
+        case 'path': return buildPathStepKeyboard();
+        default: return buildWizardCancelKeyboard(); // source / tag / start_date / end_date
+    }
+}
+
 async function handleWizardCallback(activeClient: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
     if (!(await isAuthenticatedAsync(userId))) {
@@ -388,7 +405,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '`标签` — 下载带指定 #标签 的频道媒体',
             '',
             '也可以直接发送：`date` / `tag`。',
-            '发送“取消”可退出。',
+            '点击「❌ 取消」按钮即可退出（也可发送“取消”）。',
         ].join('\n');
     }
 
@@ -401,7 +418,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '',
             '也可以直接发送：`@频道 comments` 或 `@频道 no-comments`。',
             '',
-            '发送“取消”可退出。',
+            '点击「❌ 取消」按钮即可退出（也可发送“取消”）。',
         ].join('\n');
     }
 
@@ -441,7 +458,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '文字评论、普通链接和其它无文件消息会自动忽略。',
             '',
             '也可以发送：`开` / `关` / `yes` / `no`。',
-            '发送“取消”可退出。',
+            '点击「❌ 取消」按钮即可退出（也可发送“取消”）。',
         ].join('\n');
     }
 
@@ -453,7 +470,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '请发送要下载的标签：',
             '例如：`#壁纸` 或 `壁纸`',
             '',
-            '发送“取消”可退出。',
+            '点击「❌ 取消」按钮即可退出（也可发送“取消”）。',
         ].join('\n');
     }
 
@@ -465,7 +482,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '请发送开始日期：',
             '格式：`YYYY-MM-DD`，例如 `2026-06-01`',
             '',
-            '发送“取消”可退出。',
+            '点击「❌ 取消」按钮即可退出（也可发送“取消”）。',
         ].join('\n');
     }
 
@@ -477,7 +494,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
         '请发送结束日期：',
         '格式：`YYYY-MM-DD`，例如 `2026-06-27`',
         '',
-        '发送“取消”可退出。',
+        '点击「❌ 取消」按钮即可退出（也可发送“取消”）。',
     ].join('\n');
 }
 
@@ -562,7 +579,7 @@ async function startTelegramWizard(message: Api.Message, senderId: number, kind:
     }
     await message.reply({
         message: buildTelegramWizardPrompt(state),
-        buttons: kind === 'tg_download' ? buildTelegramDownloadModeKeyboard() : undefined,
+        buttons: wizardStepButtons(state),
     });
 }
 
@@ -590,7 +607,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
             await message.reply({ message: '❌ 请发送 `date`/`日期` 或 `tag`/`标签`，也可以发送“取消”退出。' });
             return true;
         }
-        await message.reply({ message: buildTelegramWizardPrompt(state) });
+        await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         return true;
     }
 
@@ -636,11 +653,11 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
             }
 
             state.step = 'path';
-            await message.reply({ message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
+            await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
             return true;
         }
         state.step = 'path';
-        await message.reply({ message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
+        await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         return true;
     }
 
@@ -729,7 +746,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
 
         if (state.kind === 'tg_tag' || state.kind === 'tg_date') {
             state.step = state.includeComments !== undefined ? (state.kind === 'tg_tag' ? 'tag' : 'start_date') : 'comments';
-            await message.reply({ message: buildTelegramWizardPrompt(state), buttons: state.step === 'comments' ? buildTelegramCommentsKeyboard() : undefined });
+            await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
             return true;
         }
         return true;
@@ -746,7 +763,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
         state.includeComments = enabled;
         state.commentsMaxPerPost = TELEGRAM_COMMENTS_MAX_PER_POST;
         state.step = state.kind === 'tg_tag' ? 'tag' : 'start_date';
-        await message.reply({ message: buildTelegramWizardPrompt(state) });
+        await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         return true;
     }
 
@@ -774,7 +791,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
         }
         state.startDate = input;
         state.step = 'end_date';
-        await message.reply({ message: buildTelegramWizardPrompt(state) });
+        await message.reply({ message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         return true;
     }
 
@@ -1253,7 +1270,7 @@ async function handleTelegramDownloadModeCallback(update: Api.UpdateBotCallbackQ
         state.kind = 'tg_date';
         state.step = 'source';
         telegramWizardStates.set(userId, state);
-        await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state) });
+        await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '按日期下载' }));
         return;
     }
@@ -1261,7 +1278,7 @@ async function handleTelegramDownloadModeCallback(update: Api.UpdateBotCallbackQ
         state.kind = 'tg_tag';
         state.step = 'source';
         telegramWizardStates.set(userId, state);
-        await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state) });
+        await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '按标签下载' }));
         return;
     }
@@ -1270,7 +1287,7 @@ async function handleTelegramDownloadModeCallback(update: Api.UpdateBotCallbackQ
         state.commentsMaxPerPost = TELEGRAM_COMMENTS_MAX_PER_POST;
         state.step = state.kind === 'tg_tag' ? 'tag' : 'start_date';
         telegramWizardStates.set(userId, state);
-        await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state) });
+        await client.editMessage(update.peer, { message: update.msgId, text: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
             message: state.includeComments ? '将包含评论区文件' : '仅下载频道正文文件',
@@ -1351,7 +1368,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             subscriptionSource: `已选 ${sources.length} 个频道/群组`,
         };
         telegramWizardStates.set(userId, state);
-        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已选 ${sources.length} 个，请设置保存目录` }));
         return;
     }
@@ -1378,7 +1395,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             subscriptionSource: picked ? `${picked.title}（${addMatch[1]}）` : addMatch[1],
         };
         telegramWizardStates.set(userId, state);
-        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请设置保存目录以完成订阅' }));
         return;
     }
@@ -1417,7 +1434,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
             subscriptionSource: target.source,
         };
         telegramWizardStates.set(userId, state);
-        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: buildPathStepKeyboard() });
+        await client.sendMessage(update.peer, { message: buildTelegramWizardPrompt(state), buttons: wizardStepButtons(state) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请发送新的专属目录' }));
         return;
     }
