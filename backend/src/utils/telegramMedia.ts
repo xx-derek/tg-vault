@@ -27,7 +27,7 @@ function getChatDisplayName(chat: any): string | null {
 }
 
 export async function buildTelegramMessageLink(
-    client: TelegramClient,
+    _client: TelegramClient | undefined,
     message: Api.Message,
 ): Promise<TelegramMessageLink | null> {
     try {
