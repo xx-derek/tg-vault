@@ -231,3 +231,6 @@ CREATE OR REPLACE TRIGGER telegram_download_items_updated_at
 
 ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_message_link TEXT;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS telegram_source_name TEXT;
+
+-- 按 Telegram 消息链接去重的查找索引（同一条消息不重复下载）
+CREATE INDEX IF NOT EXISTS idx_files_telegram_message_link ON files(telegram_message_link);

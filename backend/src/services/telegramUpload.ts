@@ -35,7 +35,7 @@ import {
 import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules, getTelegramBatchFolderName, getTelegramChatName, isOpaqueTelegramIdentifier } from '../utils/storagePath.js';
 import { resolveTelegramStorageFolder, resolveTelegramBatchStorageFolder, resolveTelegramTaskStorageFolder, previewTelegramStorageFolder } from '../utils/telegramPathSettings.js';
-import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
+import { findDuplicateFile, findFileByTelegramMessageLink, getDuplicateMode } from '../utils/duplicatePolicy.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 const DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || '4', 10) || 4));
@@ -1434,6 +1434,24 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
                     : resolveTelegramStorageFolder(chatIdForPath, automaticFolder);
 
             const downloadSource = await resolveDownloadSource(client, file.message);
+
+            // 消息链接去重：同一条 Telegram 消息若已入库，直接跳过（不下载），
+            // 避免订阅同步的媒体组重复展开/失败未推进游标等场景产生重复副本。
+            const msgLink = await buildTelegramMessageLink(downloadSource.client, downloadSource.message);
+            const existingByLink = await findFileByTelegramMessageLink(msgLink?.link);
+            if (existingByLink) {
+                file.status = 'success';
+                file.size = Number(existingByLink.size) || 0;
+                file.fileType = getFileType(file.mimeType);
+                if (queue?.chatId) {
+                    const chatIdStr = queue.chatId.toString();
+                    const batchId = (file.message as any).groupedId?.toString();
+                    if (batchId) updateBatch(chatIdStr, batchId, { folderPath: storageFolder || undefined, providerName: storageManager.getProvider().name });
+                    rememberTransferDestination(chatIdStr, storageFolder, storageManager.getProvider().name);
+                }
+                return true;
+            }
+
             const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, file.fileName, file.targetDir, undefined, signal);
             if (!result) {
                 file.error = '下载失败';
@@ -1492,9 +1510,8 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
                     throw err;
                 }
 
-                // 从解析后的来源消息构建链接：转发到 Bot 的消息其 chatId 是与 Bot 的私聊，
-                // 无法定位原始频道/群组；downloadSource.message 才是账号级客户端解析到的原始来源消息。
-                const msgLink = await buildTelegramMessageLink(downloadSource.client, downloadSource.message);
+                // 链接已在下载前解析（downloadSource.message 才是账号级客户端解析到的原始来源消息，
+                // 转发到 Bot 的消息其 chatId 是与 Bot 的私聊，无法定位原始频道/群组），此处直接复用。
 
                 await query(`
                     INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)
@@ -1780,7 +1797,9 @@ export async function getTelegramDownloadPreview(messages: Api.Message[]): Promi
             fileName: fileInfo.fileName,
         }, storageRules);
         const storageFolder = previewTelegramStorageFolder(message.chatId?.toString() || 'unknown', automaticFolder);
-        const duplicate = await findDuplicateFile(fileInfo.fileName, storageFolder, getEstimatedFileSize(message), activeAccountId);
+        const msgLink = await buildTelegramMessageLink(undefined, message);
+        const duplicate = await findFileByTelegramMessageLink(msgLink?.link)
+            || await findDuplicateFile(fileInfo.fileName, storageFolder, getEstimatedFileSize(message), activeAccountId);
         if (duplicate) duplicateCount += 1;
     }
 
@@ -2330,6 +2349,24 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 const storedName = await getUniqueStoredName(finalFileName, storageFolder, activeAccountId);
 
                 const downloadSource = await resolveDownloadSource(client, message);
+
+                // 消息链接去重：同一条 Telegram 消息若已入库，直接跳过（不下载）。
+                const msgLink = await buildTelegramMessageLink(client, message);
+                const existingByLink = await findFileByTelegramMessageLink(msgLink?.link);
+                if (existingByLink) {
+                    updateUploadPhase(chatIdStr, uploadId, { phase: 'success', size: Number(existingByLink.size) || 0, providerName: storageManager.getProvider().name, fileType: getFileType(mimeType), folder: storageFolder });
+                    rememberTransferDestination(chatIdStr, storageFolder, storageManager.getProvider().name);
+                    if (statusMsg && !silentSessionMap.has(chatIdStr)) {
+                        await runStatusAction(chatId, async () => {
+                            await client.editMessage(chatId, {
+                                message: statusMsg!.id,
+                                text: buildDuplicateSkipped(finalFileName, storageFolder, existingByLink.id, existingByLink.telegram_message_link, existingByLink.telegram_source_name),
+                            });
+                        });
+                    }
+                    return true;
+                }
+
                 const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, fileName, undefined, onProgress, signal);
                 if (!result) {
                     lastError = '下载失败';
@@ -2403,7 +2440,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     throw err;
                 }
 
-                const msgLink = await buildTelegramMessageLink(client, message);
+                // msgLink 已在下载前解析，此处直接复用。
 
                 await query(`
                     INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id, telegram_message_link, telegram_source_name)
