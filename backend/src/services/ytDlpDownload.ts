@@ -110,7 +110,12 @@ async function runYtDlpDownload(url: string, taskDir: string): Promise<void> {
         console.error('🍪 读取 ytdlp cookies 失败:', e);
     }
 
-    const outputTemplate = path.join(taskDir, '%(title).200s-%(id)s.%(ext)s');
+    // 用字节数（B 后缀）而非字符数（s 后缀）限制标题长度：中文等多字节字符在
+    // UTF-8 下每字符最多 3-4 字节，%(title).200s 可能生成 ~600 字节的文件名，
+    // 超过大多数文件系统 255 字节的单段上限，导致 "Filename too long"。
+    // yt-dlp 的 .NB 截断会按字节裁剪且不会截断半个字符。此处限 120 字节，
+    // 为 -%(id)s、中间格式后缀（如 .fhls-698）及 .%(ext)s.ytdl 预留余量。
+    const outputTemplate = path.join(taskDir, '%(title).120B-%(id)s.%(ext)s');
     const args = [
         '--no-playlist',
         '--newline',
